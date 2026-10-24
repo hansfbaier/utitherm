@@ -1,0 +1,10 @@
+# Copy to ./uti260b.toml or ~/.config/uti260b/config.toml.
+# While joined to the camera's AP, "auto" resolves the default gateway,
+# which is the camera itself. Override with an explicit address if needed.
+[camera]
+ip = "auto"
+live_port = 9527
+connect_timeout_ms = 2000
+read_timeout_ms = 2000
+target_fps = 20
+out_dir = "captures"

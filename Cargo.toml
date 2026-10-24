@@ -1,0 +1,25 @@
+[package]
+name = "uti260b-viewer"
+version = "0.1.0"
+edition = "2024"
+description = "Independent Rust + egui live viewer for the UNI-T UTi260B+ thermal imager (TCP 9527 protocol)"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+arc-swap = "1.7"
+crossbeam-channel = "0.5"
+eframe = { version = "0.37", default-features = false, features = [
+    "clipboard",
+    "glow",
+    "default_fonts",
+    "wayland",
+    "x11",
+] }
+egui = "0.37"
+jpeg-decoder = "0.3"
+png = "0.18"
+socket2 = "0.6"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
