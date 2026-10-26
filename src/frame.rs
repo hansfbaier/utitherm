@@ -63,3 +63,92 @@ impl LiveFrame {
         self.key_c.get(index).copied().filter(|v| v.is_finite())
     }
 }
+
+/// Heuristic flat-field-correction boundary detector (§5.5).
+///
+/// The shutter cycle shifts all three key temperatures together while the
+/// scene structure stays put. That step is a recalibration, not a scene change,
+/// so frames around it must not enter a measurement baseline.
+#[derive(Debug, Default)]
+pub struct FfcDetector {
+    previous: Option<([f32; 3], f32)>,
+}
+
+/// Minimum simultaneous key-temperature step that counts as an FFC boundary.
+pub const FFC_STEP_C: f32 = 0.3;
+/// Maximum mean-luma change allowed for the scene to still count as static.
+pub const FFC_STATIC_LUMA: f32 = 4.0;
+
+impl FfcDetector {
+    /// Observe one frame; returns true when it looks like an FFC boundary.
+    pub fn observe(&mut self, frame: &LiveFrame) -> bool {
+        let keys = frame.key_c;
+        if !keys.iter().all(|value| value.is_finite()) {
+            self.previous = None;
+            return false;
+        }
+        let luma = mean_luma(&frame.yuv);
+        let previous = self.previous.replace((keys, luma));
+        let Some((previous_keys, previous_luma)) = previous else {
+            return false;
+        };
+        let steps = [
+            keys[0] - previous_keys[0],
+            keys[1] - previous_keys[1],
+            keys[2] - previous_keys[2],
+        ];
+        let all_up = steps.iter().all(|step| *step > FFC_STEP_C);
+        let all_down = steps.iter().all(|step| *step < -FFC_STEP_C);
+        let static_scene = (luma - previous_luma).abs() <= FFC_STATIC_LUMA;
+        (all_up || all_down) && static_scene
+    }
+}
+
+fn mean_luma(yuv: &[u8]) -> f32 {
+    let luma = &yuv[..crate::protocol::YUV_Y_LEN.min(yuv.len())];
+    if luma.is_empty() {
+        return 0.0;
+    }
+    luma.iter().map(|&value| f32::from(value)).sum::<f32>() / luma.len() as f32
+}
+
+#[cfg(test)]
+mod ffc_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn frame(keys: [f32; 3], luma: u8) -> LiveFrame {
+        let mut yuv = vec![luma; crate::protocol::YUV_LEN];
+        yuv[crate::protocol::YUV_Y_LEN..].fill(128);
+        LiveFrame {
+            rgba: Vec::new(),
+            yuv,
+            key_c: keys,
+            plane_c: None,
+            seq: 1,
+            rtt: Duration::from_millis(1),
+            received: std::time::Instant::now(),
+        }
+    }
+
+    #[test]
+    fn detects_a_simultaneous_step_on_a_static_scene() {
+        let mut detector = FfcDetector::default();
+        assert!(!detector.observe(&frame([30.0, 31.0, 32.0], 100)));
+        assert!(detector.observe(&frame([30.5, 31.5, 32.5], 101)));
+    }
+
+    #[test]
+    fn ignores_a_step_when_the_scene_changes() {
+        let mut detector = FfcDetector::default();
+        assert!(!detector.observe(&frame([30.0, 31.0, 32.0], 60)));
+        assert!(!detector.observe(&frame([30.5, 31.5, 32.5], 120)));
+    }
+
+    #[test]
+    fn ignores_a_single_reading_change() {
+        let mut detector = FfcDetector::default();
+        assert!(!detector.observe(&frame([30.0, 31.0, 32.0], 100)));
+        assert!(!detector.observe(&frame([30.0, 31.5, 32.0], 100)));
+    }
+}
