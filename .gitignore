@@ -2,3 +2,4 @@
 /captures
 /fixtures
 *.yuv
+/usb-cache
