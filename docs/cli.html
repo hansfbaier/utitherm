@@ -1,0 +1,1873 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>uti260b-cli — automation guide</title>
+<meta name="description" content="Command-line automation interface for the UNI-T UTi260B+ thermal imager: commands, JSON output, and capture file formats.">
+<style>
+  :root {
+    --bg: #070b12;
+    --bg-2: #0a101c;
+    --panel: rgba(16, 25, 42, 0.78);
+    --panel-solid: #0f1728;
+    --panel-2: #121d31;
+    --text: #e8eef8;
+    --muted: #93a6c2;
+    --faint: #6c7f9c;
+    --line: rgba(121, 162, 220, 0.18);
+    --line-strong: rgba(121, 162, 220, 0.34);
+    --accent: #2dd4bf;
+    --accent-2: #8b5cf6;
+    --amber: #fbbf24;
+    --green: #34d399;
+    --red: #fb7185;
+    --blue: #60a5fa;
+    --code-bg: #060a11;
+    --shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
+    --radius: 16px;
+    --sidebar: 286px;
+  }
+
+  html[data-theme="light"] {
+    --bg: #f4f7fc;
+    --bg-2: #eaf0fa;
+    --panel: rgba(255, 255, 255, 0.86);
+    --panel-solid: #ffffff;
+    --panel-2: #eef3fb;
+    --text: #122033;
+    --muted: #4f6280;
+    --faint: #70829c;
+    --line: rgba(22, 55, 100, 0.14);
+    --line-strong: rgba(22, 55, 100, 0.26);
+    --accent: #0f766e;
+    --accent-2: #6d28d9;
+    --amber: #b45309;
+    --green: #047857;
+    --red: #be123c;
+    --blue: #1d4ed8;
+    --code-bg: #0b1220;
+    --shadow: 0 20px 50px rgba(31, 61, 104, 0.14);
+  }
+
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(900px 520px at 78% -8%, rgba(45, 212, 191, 0.10), transparent 62%),
+      radial-gradient(760px 560px at 4% 12%, rgba(139, 92, 246, 0.12), transparent 60%),
+      linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 58%, var(--bg) 100%);
+    color: var(--text);
+    font: 15.5px/1.65 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
+    letter-spacing: 0.005em;
+    min-height: 100vh;
+  }
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 64px 64px;
+    mask-image: radial-gradient(ellipse at 50% 0%, black, transparent 72%);
+    opacity: 0.35;
+    z-index: -1;
+  }
+
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  code, pre, kbd, samp { font-family: "JetBrains Mono", "SFMono-Regular", ui-monospace, Consolas, "Liberation Mono", monospace; }
+  :not(pre) > code {
+    background: color-mix(in srgb, var(--panel-2) 82%, transparent);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 0.12em 0.38em;
+    font-size: 0.88em;
+    white-space: nowrap;
+  }
+  kbd {
+    border: 1px solid var(--line-strong);
+    border-bottom-width: 2px;
+    border-radius: 6px;
+    padding: 0.08em 0.4em;
+    font-size: 0.82em;
+    background: var(--panel-2);
+  }
+
+  .skip { position: absolute; left: -9999px; top: 0; }
+  .skip:focus { left: 16px; top: 16px; z-index: 99; background: var(--panel-solid); padding: 10px 14px; border-radius: 8px; }
+
+  .progress {
+    position: fixed; inset: 0 0 auto 0; height: 2px; z-index: 80;
+    background: transparent;
+  }
+  .progress > span {
+    display: block; height: 100%; width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2), var(--amber));
+    box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 70%, transparent);
+  }
+
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    display: flex; align-items: center; gap: 14px;
+    padding: 12px 22px;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--bg) 78%, transparent);
+    backdrop-filter: blur(14px) saturate(140%);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 750; letter-spacing: -0.02em; color: var(--text); }
+  .brand:hover { text-decoration: none; }
+  .logo {
+    width: 30px; height: 30px; border-radius: 9px;
+    background: conic-gradient(from 210deg, var(--accent), var(--accent-2), var(--amber), var(--accent));
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.22), 0 0 22px color-mix(in srgb, var(--accent) 38%, transparent);
+    position: relative;
+  }
+  .logo::after {
+    content: ""; position: absolute; inset: 7px; border-radius: 5px;
+    background: var(--bg); border: 1px solid rgba(255,255,255,0.18);
+  }
+  .brand small { color: var(--muted); font-weight: 500; font-size: 12px; letter-spacing: 0.02em; }
+  .topbar .spacer { flex: 1; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1px solid var(--line-strong);
+    background: color-mix(in srgb, var(--panel-2) 70%, transparent);
+    color: var(--muted);
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); }
+  .icon-btn {
+    appearance: none; border: 1px solid var(--line-strong); background: var(--panel-2);
+    color: var(--text); width: 36px; height: 36px; border-radius: 10px;
+    display: inline-grid; place-items: center; cursor: pointer;
+  }
+  .icon-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .icon-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+  .ghost-link {
+    display: inline-flex; align-items: center; gap: 7px;
+    color: var(--muted); font-weight: 600; font-size: 13px;
+    border: 1px solid var(--line); border-radius: 10px; padding: 8px 11px;
+  }
+  .ghost-link:hover { color: var(--text); border-color: var(--line-strong); text-decoration: none; }
+
+  .layout { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); gap: 0; max-width: 1720px; margin: 0 auto; }
+
+  .sidebar {
+    position: sticky; top: 61px; align-self: start;
+    height: calc(100vh - 61px);
+    overflow: auto;
+    padding: 24px 16px 40px 22px;
+    border-right: 1px solid var(--line);
+    scrollbar-width: thin;
+  }
+  .sidebar .group { margin: 0 0 22px; }
+  .sidebar .group-title {
+    color: var(--faint); font-size: 10.5px; font-weight: 750;
+    text-transform: uppercase; letter-spacing: 0.16em; margin: 0 0 8px 10px;
+  }
+  .nav { display: flex; flex-direction: column; gap: 2px; }
+  .nav a {
+    color: var(--muted); font-size: 13.5px; font-weight: 550;
+    padding: 7px 10px; border-radius: 8px; border: 1px solid transparent;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .nav a:hover { color: var(--text); background: color-mix(in srgb, var(--panel-2) 60%, transparent); text-decoration: none; }
+  .nav a.active { color: var(--text); background: color-mix(in srgb, var(--accent) 11%, transparent); border-color: color-mix(in srgb, var(--accent) 26%, transparent); }
+  .nav a .n { color: var(--faint); font: 600 10.5px/1 ui-monospace, monospace; width: 16px; }
+  .nav a.active .n { color: var(--accent); }
+  .side-card {
+    margin-top: 18px; padding: 12px 13px; border: 1px solid var(--line);
+    border-radius: 12px; background: color-mix(in srgb, var(--panel-2) 52%, transparent);
+    color: var(--muted); font-size: 12px;
+  }
+  .side-card strong { color: var(--text); display: block; margin-bottom: 4px; font-size: 12.5px; }
+
+  main { min-width: 0; padding: 0 40px 120px; }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+
+  .hero { padding: 58px 0 34px; display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr); gap: 34px; align-items: center; }
+  .kicker { color: var(--accent); font: 700 12px/1 ui-monospace, monospace; letter-spacing: 0.18em; text-transform: uppercase; margin-bottom: 14px; }
+  h1 {
+    margin: 0; font-size: clamp(38px, 5.2vw, 62px); line-height: 1.02;
+    letter-spacing: -0.045em; font-weight: 820;
+    background: linear-gradient(120deg, var(--text) 12%, var(--accent) 58%, var(--accent-2) 92%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .hero p.lead { color: var(--muted); font-size: 17px; max-width: 56ch; margin: 18px 0 22px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 8px; }
+  .badge {
+    border: 1px solid var(--line-strong); border-radius: 999px;
+    padding: 5px 11px; font-size: 11.5px; font-weight: 700; letter-spacing: 0.03em;
+    color: var(--muted); background: color-mix(in srgb, var(--panel-2) 70%, transparent);
+  }
+  .badge.green { color: var(--green); border-color: color-mix(in srgb, var(--green) 35%, transparent); }
+  .badge.cyan { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+  .badge.amber { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 35%, transparent); }
+
+  .terminal {
+    border: 1px solid var(--line-strong); border-radius: 18px; overflow: hidden;
+    background: linear-gradient(180deg, #0f1728, #060a11);
+    box-shadow: var(--shadow);
+    transform: perspective(1100px) rotateY(-2deg) rotateX(1deg);
+  }
+  .term-head { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid rgba(120,160,220,0.18); background: #0b1220; }
+  .term-head .lights { display: flex; gap: 6px; }
+  .term-head .lights span { width: 10px; height: 10px; border-radius: 50%; background: var(--red); opacity: 0.85; }
+  .term-head .lights span:nth-child(2) { background: var(--amber); }
+  .term-head .lights span:nth-child(3) { background: var(--green); }
+  .term-head .title { color: var(--faint); font: 600 11px/1 ui-monospace, monospace; margin-left: 4px; }
+  .terminal pre { margin: 0; padding: 18px 18px 20px; color: #d6e4ff; font-size: 12.4px; line-height: 1.8; overflow: auto; background: transparent; }
+  .terminal .c { color: #8ea3c7; }
+  .terminal .g { color: #6ee7b7; }
+  .terminal .y { color: #fcd34d; }
+  .terminal .m { color: #c4b5fd; }
+
+  .quick-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin: 8px 0 30px; }
+  .quick-card {
+    border: 1px solid var(--line); border-radius: 14px; padding: 16px;
+    background: color-mix(in srgb, var(--panel) 85%, transparent);
+    position: relative; overflow: hidden;
+  }
+  .quick-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent); }
+  .quick-card:nth-child(2)::before { background: var(--accent-2); }
+  .quick-card:nth-child(3)::before { background: var(--amber); }
+  .quick-card h3 { margin: 0 0 4px; font-size: 14px; letter-spacing: -0.01em; }
+  .quick-card p { margin: 0; color: var(--muted); font-size: 12.5px; }
+  .quick-card code { font-size: 11.5px; }
+
+  section.doc { scroll-margin-top: 82px; padding: 26px 0 10px; }
+  .sec-head { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 16px; }
+  .sec-icon {
+    flex: 0 0 auto; width: 38px; height: 38px; border-radius: 11px;
+    border: 1px solid var(--line-strong);
+    display: grid; place-items: center;
+    background: linear-gradient(160deg, color-mix(in srgb, var(--accent) 16%, transparent), color-mix(in srgb, var(--accent-2) 12%, transparent));
+    color: var(--accent);
+  }
+  .sec-icon svg { width: 19px; height: 19px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+  h2 { margin: 0; font-size: clamp(25px, 3vw, 32px); line-height: 1.15; letter-spacing: -0.028em; font-weight: 780; }
+  .sec-head p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+  h3 { font-size: 19px; letter-spacing: -0.018em; margin: 30px 0 10px; }
+  h4 { font-size: 14px; letter-spacing: 0.01em; margin: 22px 0 8px; color: var(--text); }
+  p { margin: 0 0 12px; }
+  .muted { color: var(--muted); }
+  .small { font-size: 12.5px; }
+  ul, ol { margin: 8px 0 14px; padding-left: 22px; color: var(--muted); }
+  li { margin: 4px 0; }
+  li strong { color: var(--text); }
+
+  .panel {
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: color-mix(in srgb, var(--panel) 88%, transparent);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.12);
+    padding: 20px;
+    margin: 16px 0;
+  }
+  .grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+
+  .code { border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden; background: var(--code-bg); margin: 12px 0 16px; }
+  .code-head {
+    display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+    border-bottom: 1px solid rgba(120, 160, 220, 0.16);
+    background: #0b1220; color: #8ea3c7;
+    font: 600 10.5px/1.4 ui-monospace, monospace; letter-spacing: 0.1em; text-transform: uppercase;
+  }
+  .code-head .lang { color: #9fb4d6; }
+  .code-head .copy {
+    margin-left: auto; appearance: none; cursor: pointer;
+    border: 1px solid rgba(120,160,220,0.24); border-radius: 6px;
+    background: rgba(120,160,220,0.08); color: #b9cbe6;
+    font: 600 10.5px/1 ui-monospace, monospace; letter-spacing: 0.06em; padding: 5px 8px;
+  }
+  .code-head .copy:hover { border-color: #2dd4bf; color: #2dd4bf; }
+  .code pre { margin: 0; padding: 15px 16px 17px; overflow: auto; background: transparent; color: #d8e4f8; font-size: 12.6px; line-height: 1.72; }
+  .code pre code { background: none; border: 0; padding: 0; font-size: inherit; white-space: pre; }
+  .code .cm { color: #6d84a6; }
+  .code .s { color: #86efac; }
+  .code .k { color: #c4b5fd; }
+  .code .n { color: #fcd34d; }
+  .code .p { color: #93c5fd; }
+
+  .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 12px; margin: 12px 0 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 560px; }
+  thead th {
+    text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.12em;
+    color: var(--faint); background: color-mix(in srgb, var(--panel-2) 78%, transparent);
+    padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  tbody td { padding: 9px 12px; border-bottom: 1px solid var(--line); color: var(--muted); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: color-mix(in srgb, var(--accent) 4%, transparent); }
+  tbody td:first-child { color: var(--text); font-weight: 600; }
+  td code, th code { white-space: nowrap; }
+
+  .callout {
+    display: grid; grid-template-columns: 26px 1fr; gap: 10px;
+    border: 1px solid var(--line-strong); border-left: 4px solid var(--blue);
+    border-radius: 10px; padding: 12px 14px; margin: 14px 0;
+    background: color-mix(in srgb, var(--blue) 7%, transparent);
+    color: var(--muted); font-size: 13.2px;
+  }
+  .callout .ci { color: var(--blue); font-weight: 800; font: 800 12px/1.7 ui-monospace, monospace; }
+  .callout strong { color: var(--text); }
+  .callout.warn { border-left-color: var(--amber); background: color-mix(in srgb, var(--amber) 7%, transparent); }
+  .callout.warn .ci { color: var(--amber); }
+  .callout.danger { border-left-color: var(--red); background: color-mix(in srgb, var(--red) 7%, transparent); }
+  .callout.danger .ci { color: var(--red); }
+  .callout.ok { border-left-color: var(--green); background: color-mix(in srgb, var(--green) 7%, transparent); }
+  .callout.ok .ci { color: var(--green); }
+
+  .cmd {
+    border: 1px solid var(--line); border-radius: 16px; overflow: hidden;
+    background: color-mix(in srgb, var(--panel) 90%, transparent);
+    margin: 18px 0;
+  }
+  .cmd-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 15px 18px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--panel-2) 46%, transparent); }
+  .cmd-head h3 { margin: 0; font-size: 18px; }
+  .method {
+    font: 800 9.5px/1 ui-monospace, monospace; letter-spacing: 0.12em; text-transform: uppercase;
+    border-radius: 5px; padding: 5px 7px; border: 1px solid;
+  }
+  .method.read { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .method.write { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); background: color-mix(in srgb, var(--amber) 10%, transparent); }
+  .method.capture { color: #c4b5fd; border-color: color-mix(in srgb, #c4b5fd 40%, transparent); background: color-mix(in srgb, #c4b5fd 10%, transparent); }
+  .method.stream { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); background: color-mix(in srgb, var(--green) 10%, transparent); }
+  .cmd-head .syn { margin-left: auto; color: var(--faint); font: 500 11.5px/1.4 ui-monospace, monospace; }
+  .cmd-body { padding: 16px 18px 18px; }
+  .cmd-body > :first-child { margin-top: 0; }
+
+  .ribbon { display: flex; gap: 3px; margin: 10px 0 6px; min-height: 54px; }
+  .seg {
+    flex: 1 1 0; border-radius: 6px; border: 1px solid rgba(255,255,255,0.12);
+    display: flex; flex-direction: column; justify-content: center; align-items: center;
+    text-align: center; padding: 6px 4px; color: #e8eef8; font: 600 10px/1.25 ui-monospace, monospace;
+    overflow: hidden; white-space: nowrap; min-width: 44px;
+  }
+  .seg small { display: block; font-weight: 500; opacity: 0.72; font-size: 9px; }
+  .seg.tok { background: linear-gradient(180deg, #134e4a, #0f3f3b); min-width: 64px; }
+  .seg.tok.photo { min-width: 86px; }
+  .seg.small { min-width: 62px; }
+  .seg.len { background: linear-gradient(180deg, #3f2d64, #31214f); }
+  .seg.y { background: linear-gradient(180deg, #14532d, #0f3d22); }
+  .seg.u { background: linear-gradient(180deg, #1e3a8a, #172c63); }
+  .seg.v { background: linear-gradient(180deg, #4c1d95, #38146e); }
+  .seg.key { background: linear-gradient(180deg, #7c2d12, #5d210b); }
+  .seg.plane { background: linear-gradient(180deg, #9a3412, #74250d); }
+  .seg.crlf { background: linear-gradient(180deg, #334155, #273244); }
+  .seg.sec0 { background: linear-gradient(180deg, #0e7490, #0b5c73); }
+  .seg.sec1 { background: linear-gradient(180deg, #b45309, #8a3f07); }
+  .seg.sec2 { background: linear-gradient(180deg, #6d28d9, #5620a9); }
+  .seg.sec3 { background: linear-gradient(180deg, #166534, #114d27); }
+  .seg.sec4 { background: linear-gradient(180deg, #475569, #374151); }
+  .ribbon-legend { display: flex; flex-wrap: wrap; gap: 12px; color: var(--faint); font-size: 11px; }
+  .ribbon-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; border: 1px solid rgba(255,255,255,0.2); }
+
+  .file-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .file-card {
+    border: 1px solid var(--line); border-radius: 14px; padding: 16px;
+    background: color-mix(in srgb, var(--panel-2) 48%, transparent);
+  }
+  .file-card .fhead { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .file-icon {
+    width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center;
+    border: 1px solid var(--line-strong); background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--accent);
+    font: 800 10px/1 ui-monospace, monospace;
+  }
+  .file-card h4 { margin: 0; font-size: 14px; }
+  .file-card .bytes { margin-left: auto; color: var(--faint); font: 600 10.5px/1 ui-monospace, monospace; white-space: nowrap; }
+  .file-card p { margin: 0; color: var(--muted); font-size: 12.5px; }
+  .file-card code { font-size: 11.5px; }
+  .fmt { color: var(--faint); font-size: 11.5px; margin-top: 6px; }
+
+  .diagram { width: 100%; height: auto; display: block; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--code-bg) 66%, transparent); margin: 12px 0 8px; }
+  .diagram text { font-family: ui-monospace, monospace; }
+
+  details.json-card {
+    border: 1px solid var(--line); border-radius: 12px; margin: 10px 0;
+    background: color-mix(in srgb, var(--panel-2) 44%, transparent); overflow: hidden;
+  }
+  details.json-card summary {
+    cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px; font-weight: 650; font-size: 13px; color: var(--text);
+  }
+  details.json-card summary::-webkit-details-marker { display: none; }
+  details.json-card summary::before {
+    content: "›"; color: var(--accent); font: 800 16px/1 ui-monospace, monospace;
+    transition: transform 0.18s ease; display: inline-block;
+  }
+  details.json-card[open] summary::before { transform: rotate(90deg); }
+  details.json-card summary .tag { margin-left: auto; color: var(--faint); font: 600 10px/1 ui-monospace, monospace; letter-spacing: 0.08em; }
+  details.json-card .inner { padding: 0 14px 14px; }
+  details.json-card .inner .code { margin-bottom: 0; }
+
+  .kv { display: grid; grid-template-columns: minmax(150px, 0.36fr) 1fr; gap: 1px; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin: 12px 0 16px; }
+  .kv > div { padding: 10px 12px; background: color-mix(in srgb, var(--panel-2) 40%, transparent); font-size: 13px; }
+  .kv > div:nth-child(odd) { color: var(--faint); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.07em; background: color-mix(in srgb, var(--panel-2) 65%, transparent); }
+
+  .steps { display: grid; gap: 10px; counter-reset: s; margin: 12px 0 16px; }
+  .step { display: grid; grid-template-columns: 30px 1fr; gap: 12px; align-items: start; }
+  .step::before {
+    counter-increment: s; content: counter(s);
+    width: 28px; height: 28px; border-radius: 9px;
+    display: grid; place-items: center; font: 800 12px/1 ui-monospace, monospace;
+    color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    background: color-mix(in srgb, var(--accent) 9%, transparent);
+  }
+  .step p { margin: 0; color: var(--muted); font-size: 13px; padding-top: 4px; }
+  .step p strong { color: var(--text); }
+
+  .footer {
+    margin-top: 40px; padding-top: 22px; border-top: 1px solid var(--line);
+    color: var(--faint); font-size: 12px; display: flex; flex-wrap: wrap; gap: 14px; justify-content: space-between;
+  }
+  .footer a { color: var(--muted); }
+  .totop {
+    position: fixed; right: 22px; bottom: 22px; z-index: 40;
+    width: 40px; height: 40px; border-radius: 12px; border: 1px solid var(--line-strong);
+    background: var(--panel-solid); color: var(--muted); display: grid; place-items: center;
+    cursor: pointer; opacity: 0; pointer-events: none; transition: opacity 0.2s ease;
+  }
+  .totop.show { opacity: 1; pointer-events: auto; }
+  .totop:hover { color: var(--accent); border-color: var(--accent); }
+
+  @media (max-width: 1080px) {
+    .layout { grid-template-columns: 1fr; }
+    .sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 16px 20px; }
+    .sidebar .group { margin-bottom: 12px; }
+    .nav { flex-direction: row; flex-wrap: wrap; }
+    .nav a { padding: 6px 9px; }
+    .side-card { display: none; }
+    main { padding: 0 22px 90px; }
+    .hero { grid-template-columns: 1fr; padding-top: 36px; }
+    .terminal { transform: none; }
+    .quick-cards { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 720px) {
+    .sidebar { max-height: 42vh; overflow: auto; }
+    .grid-2, .grid-3, .file-grid { grid-template-columns: 1fr; }
+    .topbar { padding: 10px 14px; }
+    .topbar .pill, .ghost-link span { display: none; }
+    main { padding: 0 14px 80px; }
+    .cmd-head .syn { width: 100%; margin-left: 0; }
+    .kv { grid-template-columns: 1fr; }
+    .kv > div:nth-child(odd) { padding-bottom: 2px; }
+    .kv > div:nth-child(even) { padding-top: 2px; }
+  }
+  @media print {
+    .topbar, .sidebar, .totop, .progress, .code-head .copy { display: none !important; }
+    body { background: #fff; color: #111; }
+    .layout { display: block; }
+    main { padding: 0; }
+    .panel, .cmd, .code { break-inside: avoid; box-shadow: none; }
+    a { color: #111; }
+  }
+</style>
+</head>
+<body>
+<a class="skip" href="#overview">Skip to content</a>
+<div class="progress" aria-hidden="true"><span id="progress"></span></div>
+
+<header class="topbar">
+  <a class="brand" href="#top" aria-label="uti260b-cli documentation">
+    <span class="logo" aria-hidden="true"></span>
+    <span>uti260b-cli <small>automation guide</small></span>
+  </a>
+  <span class="pill"><span class="dot" aria-hidden="true"></span>v0.1.0</span>
+  <span class="spacer"></span>
+  <a class="ghost-link" href="../UTi260B-plus-protocol-spec.md">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+    <span>Protocol spec</span>
+  </a>
+  <button class="icon-btn" id="theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle theme">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.42M17.66 6.34l1.41-1.41"/></svg>
+  </button>
+</header>
+
+<div class="layout" id="top">
+  <aside class="sidebar" aria-label="Section navigation">
+    <div class="group">
+      <div class="group-title">Getting started</div>
+      <nav class="nav">
+        <a href="#overview"><span class="n">01</span> Overview</a>
+        <a href="#install"><span class="n">02</span> Install &amp; build</a>
+        <a href="#quickstart"><span class="n">03</span> Quick start</a>
+        <a href="#options"><span class="n">04</span> Global options</a>
+      </nav>
+    </div>
+    <div class="group">
+      <div class="group-title">Commands</div>
+      <nav class="nav">
+        <a href="#cmd-info"><span class="n">05</span> info</a>
+        <a href="#cmd-frame"><span class="n">06</span> frame</a>
+        <a href="#cmd-frames"><span class="n">07</span> frames</a>
+        <a href="#cmd-capture"><span class="n">08</span> capture</a>
+        <a href="#cmd-measure"><span class="n">09</span> measure</a>
+        <a href="#cmd-palette"><span class="n">10</span> palette</a>
+        <a href="#cmd-unit"><span class="n">11</span> unit</a>
+        <a href="#cmd-watch"><span class="n">12</span> watch</a>
+      </nav>
+    </div>
+    <div class="group">
+      <div class="group-title">Data</div>
+      <nav class="nav">
+        <a href="#json"><span class="n">13</span> JSON output</a>
+        <a href="#files"><span class="n">14</span> File formats</a>
+        <a href="#capture-files"><span class="n">15</span> Capture files</a>
+        <a href="#capture-raw"><span class="n">16</span> Raw reply</a>
+        <a href="#mapping"><span class="n">17</span> Plane mapping</a>
+      </nav>
+    </div>
+    <div class="group">
+      <div class="group-title">Usage</div>
+      <nav class="nav">
+        <a href="#recipes"><span class="n">18</span> Automation recipes</a>
+        <a href="#behavior"><span class="n">19</span> Behavior &amp; limits</a>
+        <a href="#troubleshooting"><span class="n">20</span> Troubleshooting</a>
+        <a href="#reference"><span class="n">21</span> Reference</a>
+      </nav>
+    </div>
+    <div class="side-card">
+      <strong>Camera on your Wi-Fi?</strong>
+      Join SSID <code>UTi260B+</code>. The default gateway is the camera; <code>--ip auto</code> resolves it.
+    </div>
+  </aside>
+
+  <main>
+    <div class="wrap">
+
+      <section class="hero" aria-labelledby="hero-title">
+        <div>
+          <div class="kicker">UNI-T UTi260B+ · TCP 9527</div>
+          <h1 id="hero-title">Camera control,<br>scriptable.</h1>
+          <p class="lead">
+            <strong>uti260b-cli</strong> exposes the thermal imager to shells, cron jobs and
+            Python. Snapshot frames, pull full-resolution radiometric captures, sample a
+            temperature and emit JSON — without opening the GUI.
+          </p>
+          <div class="badges">
+            <span class="badge green">typed command whitelist</span>
+            <span class="badge cyan">JSON output</span>
+            <span class="badge amber">headerless capture formats</span>
+            <span class="badge">Rust · no vendor SDK</span>
+          </div>
+        </div>
+        <div class="terminal" aria-label="Example terminal session">
+          <div class="term-head">
+            <span class="lights" aria-hidden="true"><span></span><span></span><span></span></span>
+            <span class="title">bash — uti260b-cli</span>
+          </div>
+<pre><span class="c"># device state, JSON</span>
+<span class="g">$</span> uti260b-cli --json info
+{<span class="y">"versions"</span>:[<span class="s">"1.0T"</span>,<span class="s">"2.0"</span>,<span class="s">"1.1.9"</span>], ... }
+
+<span class="c"># one live frame + temperature plane</span>
+<span class="g">$</span> uti260b-cli frame --png shot.png \
+      --plane shot.f32 --require-plane
+
+<span class="c"># sample at display (121,161)</span>
+<span class="g">$</span> uti260b-cli --json measure --display 121,161
+{<span class="y">"temperature_c"</span>: <span class="m">28.79</span>, <span class="y">"plane"</span>: [<span class="m">96</span>,<span class="m">128</span>], ... }
+
+<span class="c"># full PhotoCap: JPEGs + f32 temperature</span>
+<span class="g">$</span> uti260b-cli capture --dir capture --raw capture/raw.bin
+</pre>
+        </div>
+      </section>
+
+      <div class="quick-cards">
+        <div class="quick-card">
+          <h3>Read</h3>
+          <p><code>info</code> · <code>frame</code> · <code>frames</code> · <code>measure</code> · <code>watch</code><br>Non-destructive, safe to poll.</p>
+        </div>
+        <div class="quick-card">
+          <h3>Change</h3>
+          <p><code>palette</code> · <code>unit</code><br>Verified arguments only; confirmation is explicit.</p>
+        </div>
+        <div class="quick-card">
+          <h3>Capture</h3>
+          <p><code>capture</code><br>Five sections, ~3 s, writes a file on the camera SD card.</p>
+        </div>
+      </div>
+
+      <section class="doc" id="overview">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div>
+          <div>
+            <h2>Overview</h2>
+            <p>A non-GUI front end to the live-view and capture protocol.</p>
+          </div>
+        </div>
+        <p>
+          The camera streams palette-mapped YUV frames over a single plaintext TCP
+          connection. Every command and reply is a small framed message. This CLI wraps that
+          protocol in one process per invocation and prints either readable text or JSON.
+        </p>
+        <div class="grid-2">
+          <div class="panel">
+            <h4 style="margin-top:0">Transport</h4>
+            <div class="kv">
+              <div>Endpoint</div><div><code>camera:9527</code> (default)</div>
+              <div>Framing</div><div><code>token + u32 BE length + payload + CRLF</code></div>
+              <div>Auth</div><div>none</div>
+              <div>Client model</div><div>one outstanding request; one camera client</div>
+            </div>
+          </div>
+          <div class="panel">
+            <h4 style="margin-top:0">Why a whitelist?</h4>
+            <p class="small muted" style="margin-bottom:0">
+              Malformed arguments can terminate the device daemon and require a power cycle.
+              The CLI exposes only verified commands and fixed argument sets:
+              <code>init</code>, <code>vFrame</code>, <code>PhotoCap</code>,
+              <code>colorChange+0..7</code> and three <code>measUnit</code> pairs.
+              There is no free-form command option.
+            </p>
+          </div>
+        </div>
+        <div class="callout">
+          <div class="ci">i</div>
+          <div><strong>Live measurement is possible.</strong> This firmware appends a 192×256
+          f32 temperature plane to every 11th <code>vFrame</code>. The CLI accepts both the
+          base and extended payloads automatically; use <code>--require-plane</code> when a
+          script needs a plane on the first frame.</div>
+        </div>
+      </section>
+
+      <section class="doc" id="install">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v6H4z"/><path d="M4 14h16v6H4z"/><path d="M8 7h.01M8 17h.01"/></svg></div>
+          <div>
+            <h2>Install &amp; build</h2>
+            <p>Rust 1.95+; Linux desktop libraries are only needed for the GUI binary.</p>
+          </div>
+        </div>
+        <div class="code">
+          <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
+<pre><code><span class="cm"># build both binaries</span>
+cargo build --release
+
+<span class="cm"># CLI binary</span>
+./target/release/uti260b-cli --help
+
+<span class="cm"># install on PATH</span>
+install -m 0755 target/release/uti260b-cli ~/.local/bin/</code></pre>
+        </div>
+        <p class="small muted">
+          The GUI binary is <code>uti260b-viewer</code>. Both binaries share the same
+          protocol, worker and capture decoder. Config is read from
+          <code>./uti260b.toml</code> or <code>~/.config/uti260b/config.toml</code>.
+        </p>
+        <div class="callout ok">
+          <div class="ci">✓</div>
+          <div><strong>No credentials, no fixed IP.</strong> Join the camera AP and
+          <code>--ip auto</code> (default) uses the host default gateway. Prefer an explicit
+          <code>--ip 192.168.27.10</code> in production scripts.</div>
+        </div>
+      </section>
+
+      <section class="doc" id="quickstart">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg></div>
+          <div>
+            <h2>Quick start</h2>
+            <p>Four commands that cover most scripts.</p>
+          </div>
+        </div>
+        <div class="steps">
+          <div class="step"><p><strong>Check the link.</strong> <code>uti260b-cli info</code> prints versions, unit and measurement settings.</p></div>
+          <div class="step"><p><strong>Grab a frame.</strong> <code>uti260b-cli frame --png shot.png --plane shot.f32 --require-plane</code>.</p></div>
+          <div class="step"><p><strong>Measure.</strong> <code>uti260b-cli --json measure --display 121,161</code> → JSON with °C.</p></div>
+          <div class="step"><p><strong>Capture full resolution.</strong> <code>uti260b-cli capture --dir capture</code> → five sections plus optional raw reply.</p></div>
+        </div>
+        <div class="code">
+          <div class="code-head"><span class="lang">bash — end-to-end</span><button class="copy" type="button">Copy</button></div>
+<pre><code>set -euo pipefail
+CAM=192.168.27.10
+OUT=./thermal-$(date +%Y%m%d-%H%M%S)
+mkdir -p "$OUT"
+
+uti260b-cli --ip "$CAM" --json info &gt; "$OUT/info.json"
+uti260b-cli --ip "$CAM" frame \
+  --png "$OUT/frame.png" \
+  --yuv "$OUT/frame.yuv" \
+  --plane "$OUT/frame.f32" \
+  --require-plane &gt; "$OUT/frame.json"
+
+uti260b-cli --ip "$CAM" --json measure \
+  --temp-file "$OUT/frame.f32" --display 121,161 &gt; "$OUT/sample.json"
+
+uti260b-cli --ip "$CAM" capture --dir "$OUT/capture" --raw "$OUT/capture/raw.bin" \
+  &gt; "$OUT/capture.json"
+
+jq -r '.temperature_c' "$OUT/sample.json"</code></pre>
+        </div>
+      </section>
+
+      <section class="doc" id="options">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="8" cy="17" r="2"/></svg></div>
+          <div>
+            <h2>Global options</h2>
+            <p>Available before or after the subcommand.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Option</th><th>Default</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>--ip &lt;IPV4|auto&gt;</code></td><td><code>auto</code></td><td>Camera address; <code>auto</code> = default gateway of the camera AP.</td></tr>
+              <tr><td><code>--port &lt;PORT&gt;</code></td><td><code>9527</code></td><td>Live-view TCP port.</td></tr>
+              <tr><td><code>--config &lt;PATH&gt;</code></td><td>local, then user config</td><td><code>./uti260b.toml</code> or <code>~/.config/uti260b/config.toml</code>.</td></tr>
+              <tr><td><code>--connect-timeout-ms &lt;MS&gt;</code></td><td><code>2000</code></td><td>TCP connect timeout.</td></tr>
+              <tr><td><code>--read-timeout-ms &lt;MS&gt;</code></td><td><code>2000</code></td><td>Socket read/write timeout; PhotoCap internally raises it.</td></tr>
+              <tr><td><code>--fps &lt;N&gt;</code></td><td><code>20</code></td><td>Frame-loop target rate, 1..60. Actual rate is device-bound.</td></tr>
+              <tr><td><code>--timeout-ms &lt;MS&gt;</code></td><td><code>20000</code></td><td>Per-command wait: streaming, frames, init, palette/unit confirmation.</td></tr>
+              <tr><td><code>--json</code></td><td>off</td><td>Machine-readable output on stdout; diagnostics stay on stderr.</td></tr>
+              <tr><td><code>--quiet</code></td><td>off</td><td>Suppress reconnect/retry diagnostics on stderr.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small muted">Command-specific flags are listed below. <code>capture</code> has its own <code>--capture-timeout-ms</code>; the global timeout still bounds startup.</p>
+      </section>
+
+      <section class="doc" id="commands">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg></div>
+          <div>
+            <h2>Commands</h2>
+            <p>One process per invocation; each command opens and closes its own session.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- info -->
+      <article class="cmd" id="cmd-info">
+        <div class="cmd-head">
+          <span class="method read">READ</span>
+          <h3>info</h3>
+          <span class="syn">uti260b-cli info [--json]</span>
+        </div>
+        <div class="cmd-body">
+          <p>Reads the <code>init</code> reply: firmware strings, emissivity, distance,
+          humidity, unit byte, image mode, PiP rectangle and alarm settings.</p>
+          <div class="code">
+            <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
+<pre><code>uti260b-cli info
+uti260b-cli --ip 192.168.27.10 --json info | jq '.versions, .unit'</code></pre>
+          </div>
+          <p class="small muted"><strong>Human output</strong> is one <code>key: value</code> per line;
+          <strong>JSON</strong> is a single object. The raw unit byte is always included, even when
+          its scale is unknown.</p>
+        </div>
+      </article>
+
+      <!-- frame -->
+      <article class="cmd" id="cmd-frame">
+        <div class="cmd-head">
+          <span class="method read">READ</span>
+          <h3>frame</h3>
+          <span class="syn">uti260b-cli frame [--png P] [--yuv P] [--plane P]</span>
+        </div>
+        <div class="cmd-body">
+          <p>Waits for one new live frame and optionally writes it. The device sends a
+          temperature plane only on every 11th frame; <code>--require-plane</code> keeps
+          requesting until an extended frame arrives.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Flag</th><th>Default</th><th>Effect</th></tr></thead>
+              <tbody>
+                <tr><td><code>--png &lt;PATH&gt;</code></td><td>—</td><td>Write RGBA8 PNG, 240×320.</td></tr>
+                <tr><td><code>--yuv &lt;PATH&gt;</code></td><td>—</td><td>Write raw planar YUV 4:2:0, 115 200 bytes.</td></tr>
+                <tr><td><code>--plane &lt;PATH&gt;</code></td><td>—</td><td>Write the f32 LE temperature plane if present.</td></tr>
+                <tr><td><code>--require-plane</code></td><td>off</td><td>Poll until an extended frame with a plane is received.</td></tr>
+                <tr><td><code>--max-frames &lt;N&gt;</code></td><td><code>33</code></td><td>Upper bound while waiting for the plane.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="code">
+            <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
+<pre><code><span class="cm"># snapshot + plane in one shot</span>
+uti260b-cli frame --png shot.png --yuv shot.yuv \
+  --plane shot.f32 --require-plane
+
+<span class="cm"># JSON metadata on stdout, files on disk</span>
+uti260b-cli --json frame --png shot.png --plane shot.f32 \
+  --require-plane | jq '{seq, plane}'</code></pre>
+          </div>
+          <div class="callout warn">
+            <div class="ci">!</div>
+            <div>Without <code>--require-plane</code>, <code>--plane</code> is written only if the
+            first received frame happens to be an extended one. In scripts, always pair them.</div>
+          </div>
+        </div>
+      </article>
+
+      <!-- frames -->
+      <article class="cmd" id="cmd-frames">
+        <div class="cmd-head">
+          <span class="method read">READ</span>
+          <h3>frames</h3>
+          <span class="syn">uti260b-cli frames --count N --dir DIR</span>
+        </div>
+        <div class="cmd-body">
+          <p>Writes N sampled live frames into a directory. Each sample waits for the newest
+          frame, so sequence numbers may skip while files are written.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Flag</th><th>Default</th><th>Effect</th></tr></thead>
+              <tbody>
+                <tr><td><code>--count &lt;N&gt;</code></td><td><code>1</code></td><td>Number of frames to save.</td></tr>
+                <tr><td><code>--dir &lt;DIR&gt;</code></td><td><code>frames</code></td><td>Output directory, created if needed.</td></tr>
+                <tr><td><code>--png</code></td><td>auto</td><td>Save PNG frames.</td></tr>
+                <tr><td><code>--yuv</code></td><td>auto</td><td>Save raw YUV frames.</td></tr>
+                <tr><td><code>--plane</code></td><td>off</td><td>Save <code>_temp.f32</code> on extended frames.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="small muted">With no format flag, PNG + YUV are written. Supplying any format flag
+          switches to exactly those formats. Plane files appear only on the 11th-frame cadence.</p>
+          <div class="code">
+            <div class="code-head"><span class="lang">output tree</span><button class="copy" type="button">Copy</button></div>
+<pre><code>frames/
+├── frame_000123.png          # RGBA8 240×320
+├── frame_000123.yuv          # 115 200 B YUV 4:2:0
+├── frame_000123_temp.f32     # only if extended frame (196 608 B)
+├── frame_000124.png
+└── frame_000124.yuv</code></pre>
+          </div>
+        </div>
+      </article>
+
+      <!-- capture -->
+      <article class="cmd" id="cmd-capture">
+        <div class="cmd-head">
+          <span class="method capture">CAPTURE</span>
+          <h3>capture</h3>
+          <span class="syn">uti260b-cli capture --dir DIR</span>
+        </div>
+        <div class="cmd-body">
+          <p>Runs <code>PhotoCap</code> once and writes every section. This is the
+          full-resolution radiometric path; live frames also carry a 192×256 plane, but only on
+          every 11th request.</p>
+          <div class="callout danger">
+            <div class="ci">!</div>
+            <div><strong>Side effect:</strong> the camera writes a capture file to its SD card and
+            the exchange takes roughly 3 seconds. Do not run it in a tight loop.</div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Flag</th><th>Default</th><th>Effect</th></tr></thead>
+              <tbody>
+                <tr><td><code>--dir &lt;DIR&gt;</code></td><td><code>capture</code></td><td>Output directory.</td></tr>
+                <tr><td><code>--name &lt;NAME&gt;</code></td><td><code>capture</code></td><td>Filename prefix.</td></tr>
+                <tr><td><code>--capture-timeout-ms &lt;MS&gt;</code></td><td><code>30000</code></td><td>Wait for the PhotoCap reply.</td></tr>
+                <tr><td><code>--raw &lt;PATH&gt;</code></td><td>—</td><td>Also write the full framed reply for replay/offline use.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="code">
+            <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
+<pre><code>uti260b-cli capture --dir capture --name scene42 \
+  --raw capture/scene42_raw.bin
+
+uti260b-cli --json capture --dir capture \
+  | jq '.temperature, .sections.temperature_c'</code></pre>
+          </div>
+          <p class="small">File naming and byte layouts are documented in
+          <a href="#capture-files">Capture files</a> and <a href="#capture-raw">Raw reply</a>.</p>
+        </div>
+      </article>
+
+      <!-- measure -->
+      <article class="cmd" id="cmd-measure">
+        <div class="cmd-head">
+          <span class="method read">READ</span>
+          <h3>measure</h3>
+          <span class="syn">uti260b-cli measure --display X,Y</span>
+        </div>
+        <div class="cmd-body">
+          <p>Returns one temperature. Source can be the live plane, a saved raw plane, or a
+          saved PhotoCap reply — no camera needed for the latter two.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Flag</th><th>Effect</th></tr></thead>
+              <tbody>
+                <tr><td><code>--display X,Y</code></td><td>Coordinate in the 240×320 streamed frame.</td></tr>
+                <tr><td><code>--plane PX,PY</code></td><td>Direct 192×256 plane coordinate.</td></tr>
+                <tr><td><code>--temp-file PATH</code></td><td>Read a raw 196 608-byte f32 LE plane; no network.</td></tr>
+                <tr><td><code>--capture-file PATH</code></td><td>Read a framed or bare PhotoCap reply; no network.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="small muted">If neither <code>--display</code> nor <code>--plane</code> is given,
+          the centre sample plane (96,128) is used. Display mapping is
+          <code>plane = floor(display / 1.25)</code>, with no rotation or flip.</p>
+          <div class="code">
+            <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
+<pre><code><span class="cm"># live plane (waits up to the command timeout for an extended frame)</span>
+uti260b-cli --json measure --display 121,161
+
+<span class="cm"># fully offline</span>
+uti260b-cli --json measure --temp-file scene42_temperature.f32 --display 121,161
+uti260b-cli --json measure --capture-file scene42_raw.bin --plane 96,128</code></pre>
+          </div>
+        </div>
+      </article>
+
+      <!-- palette -->
+      <article class="cmd" id="cmd-palette">
+        <div class="cmd-head">
+          <span class="method write">WRITE</span>
+          <h3>palette</h3>
+          <span class="syn">uti260b-cli palette &lt;0..7&gt;</span>
+        </div>
+        <div class="cmd-body">
+          <p>Sends <code>colorChange+&lt;n&gt;</code> (no reply), then inspects following frames
+          and compares their mean-RGB/saturation signature with the measured reference palettes.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Argument / flag</th><th>Default</th><th>Effect</th></tr></thead>
+              <tbody>
+                <tr><td><code>&lt;INDEX&gt;</code></td><td>required</td><td>Whitelisted palette index 0..=7.</td></tr>
+                <tr><td><code>--frames &lt;N&gt;</code></td><td><code>6</code></td><td>Frames inspected after the request.</td></tr>
+                <tr><td><code>--allow-mismatch</code></td><td>off</td><td>Exit 0 even when the signature does not match.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="code">
+            <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
+<pre><code>uti260b-cli palette 3
+uti260b-cli --json palette 3 --frames 10</code></pre>
+          </div>
+          <div class="callout warn">
+            <div class="ci">!</div>
+            <div>Palette names/order differ between the spec table and tested firmware. Detection is a
+            heuristic over the decoded frame (OSD included). Treat <code>confirmed:false</code> as
+            “not recognized”, not proof that the request failed.</div>
+          </div>
+        </div>
+      </article>
+
+      <!-- unit -->
+      <article class="cmd" id="cmd-unit">
+        <div class="cmd-head">
+          <span class="method write">WRITE</span>
+          <h3>unit</h3>
+          <span class="syn">uti260b-cli unit &lt;celsius|unit4|kelvin&gt;</span>
+        </div>
+        <div class="cmd-body">
+          <p>Sends one verified <code>measUnit</code> pair, waits, then re-reads <code>init</code>
+          and reports the unit byte. Exit is non-zero when the reported byte differs.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Argument / flag</th><th>Default</th><th>Effect</th></tr></thead>
+              <tbody>
+                <tr><td><code>celsius</code></td><td>—</td><td>Send <code>measUnit+1+0</code>; expect unit byte 0.</td></tr>
+                <tr><td><code>unit4</code></td><td>—</td><td>Send <code>measUnit+1+1</code>; expect unit byte 4 (scale unresolved).</td></tr>
+                <tr><td><code>kelvin</code></td><td>—</td><td>Send <code>measUnit+0+1</code>; expect unit byte 6.</td></tr>
+                <tr><td><code>--settle-ms &lt;MS&gt;</code></td><td><code>800</code></td><td>Delay before re-reading init.</td></tr>
+                <tr><td><code>--allow-mismatch</code></td><td>off</td><td>Exit 0 even when init reports another byte.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="code">
+            <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
+<pre><code>uti260b-cli unit celsius
+uti260b-cli --json unit kelvin --settle-ms 1200</code></pre>
+          </div>
+          <div class="callout danger">
+            <div class="ci">!</div>
+            <div><strong>Tested-firmware caveat.</strong> Switching to Kelvin worked, but returning to
+            Celsius left <code>init</code> reporting unit byte <code>2</code> while the OSD stayed in K.
+            The CLI reports the byte and exits 1 unless <code>--allow-mismatch</code>. Recovery may need a
+            power cycle or the camera menu.</div>
+          </div>
+        </div>
+      </article>
+
+      <!-- watch -->
+      <article class="cmd" id="cmd-watch">
+        <div class="cmd-head">
+          <span class="method stream">STREAM</span>
+          <h3>watch</h3>
+          <span class="syn">uti260b-cli watch --json --sample X,Y</span>
+        </div>
+        <div class="cmd-body">
+          <p>Keeps one session open and emits one record per frame. With <code>--json</code> this is
+          JSON Lines, ideal for pipes and log shippers.</p>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Flag</th><th>Default</th><th>Effect</th></tr></thead>
+              <tbody>
+                <tr><td><code>--frames &lt;N&gt;</code></td><td>infinite</td><td>Stop after N records.</td></tr>
+                <tr><td><code>--duration-ms &lt;MS&gt;</code></td><td>infinite</td><td>Stop after a wall-clock duration.</td></tr>
+                <tr><td><code>--sample X,Y</code></td><td>—</td><td>Sample this display coordinate using the most recent plane.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="code">
+            <div class="code-head"><span class="lang">bash — JSON Lines</span><button class="copy" type="button">Copy</button></div>
+<pre><code>uti260b-cli --json watch --duration-ms 60000 \
+  --sample 121,161 &gt; stream.jsonl
+
+<span class="cm"># live CSV of key temperature A</span>
+uti260b-cli --json watch | jq -r '[.seq, .key_c[0]] | @csv' &gt; keys.csv</code></pre>
+          </div>
+        </div>
+      </article>
+
+      <section class="doc" id="json">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 4H5v16h3M16 4h3v16h-3"/><path d="M9 9h6M9 13h6M9 17h3"/></svg></div>
+          <div>
+            <h2>JSON output</h2>
+            <p>One object per command; <code>watch</code> emits one object per frame.</p>
+          </div>
+        </div>
+        <p>Field names are stable; values are SI-ish. Temperatures carry a <code>_c</code> suffix only
+        where the protocol defines them as Celsius (planes and frame key floats). Device-scaled init
+        fields are unit-neutral because the unit byte can change.</p>
+
+        <details class="json-card" open>
+          <summary>info <span class="tag">OBJECT</span></summary>
+          <div class="inner">
+            <div class="code">
+              <div class="code-head"><span class="lang">json</span><button class="copy" type="button">Copy</button></div>
+<pre><code>{
+  "versions": ["1.0T", "2.0", "1.1.9"],
+  "emissivity": 0.95,
+  "distance_m": 0.25,
+  "ambient": 25.0,
+  "ambient2": 25.0,
+  "humidity_pct": 55,
+  "ambient_int": 25,
+  "unit": { "byte": 0, "label": "°C" },
+  "image_select": 0,
+  "fusion_level": 0.5,
+  "pip_rect": [60, 80, 120, 160],
+  "mark_flags": 15,
+  "alarm": { "enabled": false, "high_delta_k": 5.0, "value": 36.7 },
+  "camera_info": [1, 20],
+  "other_info": [1, 70],
+  "laser_px": [160, 229],
+  "fuse_xy": [0, 0, 0],
+  "colour_scale": "0000000000000000..."
+}</code></pre>
+            </div>
+          </div>
+        </details>
+
+        <details class="json-card" open>
+          <summary>frame <span class="tag">OBJECT</span></summary>
+          <div class="inner">
+            <div class="code">
+              <div class="code-head"><span class="lang">json</span><button class="copy" type="button">Copy</button></div>
+<pre><code>{
+  "seq": 5,
+  "rtt_ms": 77.7,
+  "key_c": [33.05, 28.13, 28.79],
+  "plane": {
+    "present": true,
+    "path": "shot.f32",
+    "stats": {
+      "min_c": 27.87, "max_c": 32.46,
+      "mean_c": 28.91, "std_dev_c": 0.47
+    }
+  },
+  "files": { "png": "shot.png", "yuv": "shot.yuv" }
+}</code></pre>
+            </div>
+          </div>
+        </details>
+
+        <details class="json-card" open>
+          <summary>frames <span class="tag">OBJECT</span></summary>
+          <div class="inner">
+            <div class="code">
+              <div class="code-head"><span class="lang">json</span><button class="copy" type="button">Copy</button></div>
+<pre><code>{
+  "count": 2,
+  "dir": "frames",
+  "frames": [
+    {
+      "seq": 1, "rtt_ms": 100.5,
+      "key_c": [33.12, 28.20, 28.92],
+      "plane": { "present": true, "path": "frames/frame_000001_temp.f32",
+                 "stats": { "min_c": 28.0, "max_c": 33.0, "mean_c": 29.0, "std_dev_c": 0.4 } },
+      "files": { "png": "frames/frame_000001.png", "yuv": "frames/frame_000001.yuv" }
+    }
+  ]
+}</code></pre>
+            </div>
+          </div>
+        </details>
+
+        <details class="json-card">
+          <summary>capture <span class="tag">OBJECT</span></summary>
+          <div class="inner">
+            <div class="code">
+              <div class="code-head"><span class="lang">json</span><button class="copy" type="button">Copy</button></div>
+<pre><code>{
+  "sections": {
+    "shot_jpeg":       { "bytes": 49794,  "path": "capture/capture_shot.jpg" },
+    "temperature_c":   { "bytes": 196608, "samples": 49152, "width": 192, "height": 256,
+                         "path": "capture/capture_temperature.f32" },
+    "vis_jpeg":        { "bytes": 214221, "path": "capture/capture_vis.jpg" },
+    "y16":             { "bytes": 98304,  "path": "capture/capture_y16.u16" },
+    "tail":            { "bytes": 8,      "path": "capture/capture_tail.bin" }
+  },
+  "temperature": {
+    "min_c": 28.13, "max_c": 33.05,
+    "mean_c": 28.92, "std_dev_c": 0.43
+  },
+  "mapping": "display/1.25, no rotation or flip",
+  "raw_message": "capture/capture_raw.bin"
+}</code></pre>
+            </div>
+          </div>
+        </details>
+
+        <details class="json-card">
+          <summary>measure <span class="tag">OBJECT</span></summary>
+          <div class="inner">
+            <div class="code">
+              <div class="code-head"><span class="lang">json</span><button class="copy" type="button">Copy</button></div>
+<pre><code>{
+  "temperature_c": 28.79,
+  "source": "live",
+  "display": [121.0, 161.0],
+  "plane": [96, 128],
+  "mapping": "display/1.25, no rotation or flip"
+}</code></pre>
+            </div>
+          </div>
+        </details>
+
+        <details class="json-card">
+          <summary>palette &amp; unit <span class="tag">OBJECT</span></summary>
+          <div class="inner">
+            <div class="code">
+              <div class="code-head"><span class="lang">json</span><button class="copy" type="button">Copy</button></div>
+<pre><code>// palette
+{
+  "requested": 3, "detected": 3, "distance": 25.0,
+  "confirmed": true,
+  "samples": [{ "seq": 1, "detected": 3, "distance": 25.0 }],
+  "note": "signature heuristic against spec §3.1 reference means"
+}
+
+// unit
+{
+  "requested": "celsius",
+  "expected_unit_byte": 0,
+  "reported_unit_byte": 0,
+  "reported_unit": "°C",
+  "confirmed": true
+}</code></pre>
+            </div>
+          </div>
+        </details>
+
+        <details class="json-card">
+          <summary>watch <span class="tag">JSON LINES</span></summary>
+          <div class="inner">
+            <div class="code">
+              <div class="code-head"><span class="lang">jsonl</span><button class="copy" type="button">Copy</button></div>
+<pre><code>{"seq":1,"rtt_ms":39.0,"key_c":[33.12,28.20,28.92],"has_plane":false,"plane":null,"sample_c":null}
+{"seq":2,"rtt_ms":32.5,"key_c":[33.12,28.20,28.92],"has_plane":true,
+ "plane":{"min_c":28.0,"max_c":33.0,"mean_c":29.0},"sample_c":28.79}</code></pre>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="doc" id="files">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg></div>
+          <div>
+            <h2>File formats</h2>
+            <p>Every numeric format is headerless; dimensions and byte sizes are the schema.</p>
+          </div>
+        </div>
+
+        <h3>Live frame formats</h3>
+        <div class="file-grid">
+          <div class="file-card">
+            <div class="fhead">
+              <div class="file-icon">PNG</div>
+              <h4>PNG</h4>
+              <span class="bytes">240 × 320</span>
+            </div>
+            <p>RGBA8, row-major, alpha 255. Palette and OSD are baked in by the device.</p>
+            <div class="fmt"><code>frame --png</code> · <code>frames --png</code></div>
+          </div>
+          <div class="file-card">
+            <div class="fhead">
+              <div class="file-icon">YUV</div>
+              <h4>Raw YUV 4:2:0</h4>
+              <span class="bytes">115 200 B</span>
+            </div>
+            <p>Planar Y, U, V. Y 76 800 B (240×320), U 19 200 B, V 19 200 B (120×160). BT.601 full range.</p>
+            <div class="fmt"><code>frame --yuv</code> · <code>frames --yuv</code></div>
+          </div>
+          <div class="file-card">
+            <div class="fhead">
+              <div class="file-icon">F32</div>
+              <h4>Live temperature plane</h4>
+              <span class="bytes">196 608 B</span>
+            </div>
+            <p>f32 LE °C, 49 152 samples, row-major 192 wide × 256 tall, stride 192. Same geometry as the PhotoCap temperature section.</p>
+            <div class="fmt"><code>frame --plane</code> · <code>frames --plane</code> · every 11th frame</div>
+          </div>
+          <div class="file-card">
+            <div class="fhead">
+              <div class="file-icon">RAW</div>
+              <h4>Live reply (debug)</h4>
+              <span class="bytes">115 227 / 311 835 B</span>
+            </div>
+            <p>Base or extended vFrame, including token, length and CRLF. Not written by default; useful for protocol fixtures.</p>
+            <div class="fmt">base = YUV + 12 B keys; extended = base + 196 608 B plane</div>
+          </div>
+        </div>
+
+        <h3>Wire layouts</h3>
+        <div class="panel">
+          <h4 style="margin-top:0">Base <code>vFrame</code> — 115 227 B total</h4>
+          <div class="ribbon" aria-label="Base vFrame layout">
+            <span class="seg tok" style="flex:1.2">{UTi_img}<small>9 B token</small></span>
+            <span class="seg len" style="flex:.6">len<small>u32 BE</small></span>
+            <span class="seg y" style="flex:8">Y<small>76 800 B</small></span>
+            <span class="seg u" style="flex:2">U<small>19 200 B</small></span>
+            <span class="seg v" style="flex:2">V<small>19 200 B</small></span>
+            <span class="seg key" style="flex:1">keys<small>3 × f32 BE</small></span>
+            <span class="seg crlf" style="flex:.6">CRLF<small>2 B</small></span>
+          </div>
+          <div class="ribbon-legend">
+            <span><i class="swatch" style="background:#134e4a"></i> token</span>
+            <span><i class="swatch" style="background:#3f2d64"></i> length</span>
+            <span><i class="swatch" style="background:#14532d"></i> Y</span>
+            <span><i class="swatch" style="background:#1e3a8a"></i> U</span>
+            <span><i class="swatch" style="background:#4c1d95"></i> V</span>
+            <span><i class="swatch" style="background:#7c2d12"></i> key temps</span>
+            <span><i class="swatch" style="background:#334155"></i> CRLF</span>
+          </div>
+          <p class="small muted" style="margin:12px 0 0">Byte math: <code>9 + 4 + 115 200 + 12 + 2 = 115 227</code>. The declared length counts token, itself, payload and CRLF.</p>
+        </div>
+
+        <div class="panel">
+          <h4 style="margin-top:0">Extended <code>vFrame</code> — 311 835 B total, every 11th request</h4>
+          <div class="ribbon" aria-label="Extended vFrame layout">
+            <span class="seg tok" style="flex:1.2">{UTi_img}<small>9 B</small></span>
+            <span class="seg len" style="flex:.6">len<small>u32 BE</small></span>
+            <span class="seg y" style="flex:7">YUV 4:2:0<small>115 200 B</small></span>
+            <span class="seg key" style="flex:1">keys<small>12 B</small></span>
+            <span class="seg plane" style="flex:9">temperature plane<small>196 608 B f32 LE</small></span>
+            <span class="seg crlf" style="flex:.6">CRLF<small>2 B</small></span>
+          </div>
+          <p class="small muted" style="margin:12px 0 0">Byte math: <code>115 227 + 196 608 = 311 835</code>. The plane follows the 12-byte key temperatures; it is not before them.</p>
+        </div>
+
+        <h3>Sample parsers</h3>
+        <div class="code">
+          <div class="code-head"><span class="lang">python — numpy</span><button class="copy" type="button">Copy</button></div>
+<pre><code>import numpy as np
+
+temp = np.fromfile("capture_temperature.f32", dtype="&lt;f4").reshape(256, 192)
+y16  = np.fromfile("capture_y16.u16",       dtype="&lt;u2").reshape(256, 192)
+
+# display (x, y) → plane sample
+x, y = 121, 161
+px, py = int(x / 1.25), int(y / 1.25)
+print(temp[py, px])          # °C</code></pre>
+        </div>
+        <div class="code">
+          <div class="code-head"><span class="lang">rust</span><button class="copy" type="button">Copy</button></div>
+<pre><code>let bytes = std::fs::read("capture_temperature.f32")?;
+assert_eq!(bytes.len(), 192 * 256 * 4);
+let temp: Vec&lt;f32&gt; = bytes
+    .as_chunks::&lt;4&gt;().0
+    .iter()
+    .map(|b| f32::from_le_bytes(*b))
+    .collect();
+let (px, py) = (96, 128);
+let t_c = temp[py * 192 + px];</code></pre>
+        </div>
+      </section>
+
+      <section class="doc" id="capture-files">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M3 7h4l2-3h6l2 3h4v12H3z"/><circle cx="12" cy="13" r="3.5"/></svg></div>
+          <div>
+            <h2>Capture files</h2>
+            <p>Five sections written by <code>capture</code>, prefixed with <code>--name</code>.</p>
+          </div>
+        </div>
+        <div class="code">
+          <div class="code-head"><span class="lang">output tree</span><button class="copy" type="button">Copy</button></div>
+<pre><code>capture/
+├── capture_shot.jpg           # section 0 — JPEG with OSD, 240×320
+├── capture_temperature.f32    # section 1 — f32 LE °C, 192×256, 196 608 B
+├── capture_vis.jpg            # section 2 — clean JPEG, 480×640
+├── capture_y16.u16            # section 3 — u16 LE raw plane, 192×256, 98 304 B
+├── capture_tail.bin           # section 4 — 8 unknown bytes (zeros in the reference)
+└── capture_raw.bin            # optional --raw: full framed PhotoCap reply</code></pre>
+        </div>
+        <div class="file-grid">
+          <div class="file-card">
+            <div class="fhead"><div class="file-icon">JPG</div><h4>shot JPEG</h4><span class="bytes">varies</span></div>
+            <p>Baseline JPEG, <strong>240×320</strong>, includes the device OSD (readout, icons, palette bar, timestamp).</p>
+            <div class="fmt"><code>&lt;name&gt;_shot.jpg</code> · section 0</div>
+          </div>
+          <div class="file-card">
+            <div class="fhead"><div class="file-icon">F32</div><h4>temperature plane</h4><span class="bytes">196 608 B</span></div>
+            <p>IEEE-754 <strong>f32 little-endian</strong>, °C, row-major. Width <strong>192</strong>, height <strong>256</strong>, stride 192, 49 152 samples. Headerless.</p>
+            <div class="fmt"><code>&lt;name&gt;_temperature.f32</code> · section 1</div>
+          </div>
+          <div class="file-card">
+            <div class="fhead"><div class="file-icon">JPG</div><h4>visible JPEG</h4><span class="bytes">varies</span></div>
+            <p>Baseline JPEG, <strong>480×640</strong>, clean visible-light image without OSD.</p>
+            <div class="fmt"><code>&lt;name&gt;_vis.jpg</code> · section 2</div>
+          </div>
+          <div class="file-card">
+            <div class="fhead"><div class="file-icon">U16</div><h4>y16 raw plane</h4><span class="bytes">98 304 B</span></div>
+            <p><strong>u16 little-endian</strong>, 192×256, 49 152 values. Raw sensor plane — <em>not</em> linear temperature; diagnostics only.</p>
+            <div class="fmt"><code>&lt;name&gt;_y16.u16</code> · section 3</div>
+          </div>
+          <div class="file-card">
+            <div class="fhead"><div class="file-icon">BIN</div><h4>tail block</h4><span class="bytes">8 B</span></div>
+            <p>Eight bytes of unknown purpose; zero in the reference capture. Preserve verbatim.</p>
+            <div class="fmt"><code>&lt;name&gt;_tail.bin</code> · section 4</div>
+          </div>
+          <div class="file-card">
+            <div class="fhead"><div class="file-icon">RAW</div><h4>framed reply</h4><span class="bytes">~550 KB</span></div>
+            <p>Complete PhotoCap message with token, declared length, five length-prefixed sections and CRLF. Accepts replay and offline measurement.</p>
+            <div class="fmt"><code>--raw PATH</code> · see next section</div>
+          </div>
+        </div>
+
+        <div class="callout">
+          <div class="ci">i</div>
+          <div><strong>Unit of the plane is °C</strong> regardless of the device’s display unit byte.
+          The camera’s ambient/alarm fields in <code>init</code> may follow the configured unit; the
+          radiometric plane is documented as Celsius.</div>
+        </div>
+      </section>
+
+      <section class="doc" id="capture-raw">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/><path d="M18 15l3 3-3 3"/></svg></div>
+          <div>
+            <h2>Raw <code>PhotoCap</code> reply</h2>
+            <p>Framing is the same as every other reply; the payload is five length-prefixed sections.</p>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="ribbon" aria-label="PhotoCap raw message layout">
+            <span class="seg tok photo" style="flex:1.6">{UTi_Photo}<small>11 B token</small></span>
+            <span class="seg len" style="flex:.6;min-width:52px">len<small>u32 BE total</small></span>
+            <span class="seg sec0" style="flex:4">§0<small>len + JPEG</small></span>
+            <span class="seg sec1" style="flex:8">§1<small>len + f32</small></span>
+            <span class="seg sec2" style="flex:7">§2<small>len + JPEG</small></span>
+            <span class="seg sec3" style="flex:5">§3<small>len + u16</small></span>
+            <span class="seg sec4 small" style="flex:1">§4<small>len + 8 B</small></span>
+            <span class="seg crlf" style="flex:.6;min-width:52px">CRLF<small>2 B</small></span>
+          </div>
+          <div class="ribbon-legend">
+            <span><i class="swatch" style="background:#134e4a"></i> token</span>
+            <span><i class="swatch" style="background:#3f2d64"></i> total length</span>
+            <span><i class="swatch" style="background:#0e7490"></i> section 0</span>
+            <span><i class="swatch" style="background:#b45309"></i> section 1</span>
+            <span><i class="swatch" style="background:#6d28d9"></i> section 2</span>
+            <span><i class="swatch" style="background:#166534"></i> section 3</span>
+            <span><i class="swatch" style="background:#475569"></i> section 4</span>
+          </div>
+          <p class="small muted" style="margin:12px 0 0">
+            Total length = <code>11 + 4 + Σ(4 + section_len) + 2</code>. The end tag is inside the
+            declared length.
+          </p>
+        </div>
+
+        <h3>Section table</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Kind</th><th>Length</th><th>Encoding / geometry</th><th>File</th></tr></thead>
+            <tbody>
+              <tr><td>0</td><td>screenshot</td><td>varies</td><td>Baseline JPEG with OSD, 240×320</td><td><code>_shot.jpg</code></td></tr>
+              <tr><td>1</td><td>temperature</td><td><strong>196 608</strong></td><td>f32 LE °C, 192 wide × 256 tall, stride 192</td><td><code>_temperature.f32</code></td></tr>
+              <tr><td>2</td><td>visible</td><td>varies</td><td>Baseline JPEG, clean, 480×640</td><td><code>_vis.jpg</code></td></tr>
+              <tr><td>3</td><td>raw sensor</td><td><strong>98 304</strong></td><td>u16 LE, 192×256</td><td><code>_y16.u16</code></td></tr>
+              <tr><td>4</td><td>tail</td><td><strong>8</strong></td><td>unknown; zeros in reference</td><td><code>_tail.bin</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small muted">Each section is <code>u32 BE length</code> followed by exactly that many
+        bytes. Section 0 and 2 lengths change with JPEG content; 1, 3 and 4 are fixed.</p>
+
+        <h4>Reading the raw reply</h4>
+        <div class="code">
+          <div class="code-head"><span class="lang">python — parse sections</span><button class="copy" type="button">Copy</button></div>
+<pre><code>import struct
+
+blob = open("capture_raw.bin", "rb").read()
+assert blob[:11] == b"{UTi_Photo}"
+total, = struct.unpack_from("&gt;I", blob, 11)       # total message length
+off = 15
+sections = []
+for _ in range(5):
+    n, = struct.unpack_from("&gt;I", blob, off)      # u32 BE section length
+    off += 4
+    sections.append(blob[off:off + n])
+    off += n
+assert off + 2 == len(blob) == total
+assert blob[off:off + 2] == b"\r\n"
+
+import numpy as np
+temp = np.frombuffer(sections[1], dtype="&lt;f4").reshape(256, 192)
+y16  = np.frombuffer(sections[3], dtype="&lt;u2").reshape(256, 192)
+print(sections[0][:2], sections[2][:2])              # b'\xff\xd8' SOI</code></pre>
+        </div>
+
+        <div class="callout ok">
+          <div class="ci">✓</div>
+          <div><strong>Integrity checks in scripts:</strong> token equals <code>{UTi_Photo}</code>,
+          declared total equals the file length, every section length stays in bounds, section 1
+          is exactly <code>196 608</code> B, section 3 is exactly <code>98 304</code> B, section 4 is
+          <code>8</code> B, and the final two bytes are <code>0D 0A</code>.</div>
+        </div>
+
+        <h4>Offline use</h4>
+        <div class="code">
+          <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
+<pre><code><span class="cm"># sample without a camera</span>
+uti260b-cli --json measure --capture-file capture_raw.bin --display 121,161
+
+<span class="cm"># verify luma/orientation against the OSD JPEG (GUI binary)</span>
+uti260b-viewer --verify-capture capture_raw.bin</code></pre>
+        </div>
+      </section>
+
+      <section class="doc" id="mapping">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><path d="M10 6.5h4M14 17.5h-4"/></svg></div>
+          <div>
+            <h2>Plane mapping</h2>
+            <p>Display and measurement planes share orientation; the scale is exactly 1.25.</p>
+          </div>
+        </div>
+        <div class="panel">
+          <svg class="diagram" viewBox="0 0 820 400" role="img" aria-label="Display 240 by 320 maps to plane 192 by 256 by dividing by 1.25">
+            <defs>
+              <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="#2dd4bf"/>
+              </marker>
+            </defs>
+            <!-- display -->
+            <rect x="60" y="38" width="240" height="320" rx="8" fill="rgba(45,212,191,0.06)" stroke="#2dd4bf" stroke-width="1.6"/>
+            <g stroke="rgba(45,212,191,0.20)" stroke-width="1">
+              <path d="M60 118h240M60 198h240M60 278h240M140 38v320M220 38v320"/>
+            </g>
+            <text x="180" y="24" fill="#93a6c2" font-size="11" text-anchor="middle">DISPLAY · 240 × 320</text>
+            <text x="180" y="388" fill="#e8eef8" font-size="12" text-anchor="middle">PNG / YUV / OSD frame</text>
+            <!-- sample marker display -->
+            <circle cx="181" cy="199" r="5" fill="#fbbf24"/>
+            <text x="192" y="192" fill="#fbbf24" font-size="10">display (121,161)</text>
+
+            <!-- plane -->
+            <rect x="560" y="70" width="192" height="256" rx="8" fill="rgba(139,92,246,0.08)" stroke="#8b5cf6" stroke-width="1.6"/>
+            <g stroke="rgba(139,92,246,0.20)" stroke-width="1">
+              <path d="M560 134h192M560 198h192M560 262h192M624 70v256M688 70v256"/>
+            </g>
+            <text x="656" y="56" fill="#93a6c2" font-size="11" text-anchor="middle">PLANE · 192 × 256</text>
+            <text x="656" y="354" fill="#e8eef8" font-size="12" text-anchor="middle">f32 LE °C · stride 192</text>
+            <circle cx="638" cy="230" r="5" fill="#fbbf24"/>
+            <text x="648" y="224" fill="#fbbf24" font-size="10">plane (96,128)</text>
+
+            <!-- arrow -->
+            <path d="M330 199 H 520" fill="none" stroke="#2dd4bf" stroke-width="1.6" stroke-dasharray="5 5" marker-end="url(#ar)"/>
+            <rect x="344" y="160" width="166" height="30" rx="7" fill="#0b1220" stroke="rgba(45,212,191,0.35)"/>
+            <text x="427" y="180" fill="#2dd4bf" font-size="11" text-anchor="middle">floor(display / 1.25)</text>
+            <text x="427" y="226" fill="#93a6c2" font-size="10" text-anchor="middle">no rotation · no flip</text>
+          </svg>
+        </div>
+        <div class="grid-2">
+          <div>
+            <h4>Display → plane</h4>
+            <div class="code">
+              <div class="code-head"><span class="lang">formula</span><button class="copy" type="button">Copy</button></div>
+<pre><code>plane_x = floor(display_x / 1.25)
+plane_y = floor(display_y / 1.25)
+
+index = plane_y * 192 + plane_x</code></pre>
+            </div>
+          </div>
+          <div>
+            <h4>Plane → display</h4>
+            <div class="code">
+              <div class="code-head"><span class="lang">formula</span><button class="copy" type="button">Copy</button></div>
+<pre><code>display_x = plane_x * 1.25
+display_y = plane_y * 1.25
+
+// sample centre: plane (96,128) → display (120,160)</code></pre>
+            </div>
+          </div>
+        </div>
+        <div class="callout warn">
+          <div class="ci">!</div>
+          <div><strong>Stride is 192, not 256.</strong> Rendering the plane 256 wide tiles it into
+          four bands. The CLI and GUI always use 192. The plane is not rotated or flipped relative
+          to the display.</div>
+        </div>
+      </section>
+
+      <section class="doc" id="recipes">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5M8 17h3"/></svg></div>
+          <div>
+            <h2>Automation recipes</h2>
+            <p>Copy-paste patterns for shells, Python, cron and pipelines.</p>
+          </div>
+        </div>
+
+        <h3>Snapshot and sample</h3>
+        <div class="code">
+          <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
+<pre><code>#!/usr/bin/env bash
+set -euo pipefail
+
+CAM="${CAM:-192.168.27.10}"
+OUT="${1:-snapshot}"
+mkdir -p "$OUT"
+
+uti260b-cli --ip "$CAM" --quiet frame \
+  --png "$OUT/frame.png" \
+  --plane "$OUT/frame.f32" \
+  --require-plane &gt; "$OUT/frame.json"
+
+temp=$(uti260b-cli --json measure \
+  --temp-file "$OUT/frame.f32" --display 121,161 | jq -r '.temperature_c')
+
+printf 'sample: %s °C\n' "$temp"</code></pre>
+        </div>
+
+        <h3>Threshold alarm</h3>
+        <div class="code">
+          <div class="code-head"><span class="lang">bash — jq predicate</span><button class="copy" type="button">Copy</button></div>
+<pre><code>LIMIT=40
+while sleep 1; do
+  t=$(uti260b-cli --json --quiet measure --display 121,161 | jq -r '.temperature_c')
+  if jq -en --argjson t "$t" --argjson lim "$LIMIT" '$t &gt; $lim' &gt;/dev/null; then
+    notify-send "Thermal alarm" "$t °C at sample point"
+  fi
+done
+
+<span class="cm"># tighter loop: one connection, parse JSON Lines</span>
+uti260b-cli --json watch --sample 121,161 \
+  | jq -r 'select(.sample_c &gt; 40) | "ALARM \(.sample_c) °C seq \(.seq)"'</code></pre>
+        </div>
+
+        <h3>Capture once, measure many</h3>
+        <div class="code">
+          <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
+<pre><code>uti260b-cli capture --dir ./scene --raw ./scene/raw.bin
+
+for xy in 60,80 121,161 200,240; do
+  uti260b-cli --json measure --capture-file ./scene/raw.bin --display "$xy"
+done
+
+<span class="cm"># or from the extracted plane</span>
+uti260b-cli --json measure --temp-file ./scene/capture_temperature.f32 --plane 96,128</code></pre>
+        </div>
+
+        <h3>Python</h3>
+        <div class="code">
+          <div class="code-head"><span class="lang">python</span><button class="copy" type="button">Copy</button></div>
+<pre><code>import json
+import subprocess
+
+def measure(display="121,161", ip="192.168.27.10"):
+    out = subprocess.run(
+        ["uti260b-cli", "--ip", ip, "--json", "--quiet",
+         "measure", "--display", display],
+        capture_output=True, text=True, check=True,
+    )
+    return json.loads(out.stdout)
+
+sample = measure()
+print(sample["temperature_c"], sample["plane"])</code></pre>
+        </div>
+
+        <h3>Cron</h3>
+        <div class="code">
+          <div class="code-head"><span class="lang">crontab</span><button class="copy" type="button">Copy</button></div>
+<pre><code># every 5 minutes: snapshot + capture metadata
+*/5 * * * * /home/me/bin/uti260b-cli --ip 192.168.27.10 --json \
+  capture --dir /srv/thermal/$(date +\%Y\%m\%d-\%H\%M) \
+  &gt;&gt; /var/log/thermal.jsonl 2&gt;&gt; /var/log/thermal.err</code></pre>
+        </div>
+
+        <h3>Batch frames</h3>
+        <div class="code">
+          <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
+<pre><code><span class="cm"># 60 sampled frames; PNG + YUV; planes on extended frames</span>
+uti260b-cli frames --count 60 --dir ./frames --png --yuv --plane
+
+<span class="cm"># build a heat-map video from the saved planes (requires ffmpeg)</span>
+for f in frames/*_temp.f32; do
+  python3 - "$f" &lt;&lt;'PY'
+import sys, numpy as np
+from PIL import Image
+p = np.fromfile(sys.argv[1], dtype="&lt;f4").reshape(256, 192)
+lo, hi = p.min(), p.max()
+img = ((p - lo) / max(hi - lo, 1e-6) * 255).astype("uint8")
+Image.fromarray(img).save(sys.argv[1].replace(".f32", ".png"))
+PY
+done</code></pre>
+        </div>
+      </section>
+
+      <section class="doc" id="behavior">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v18M5 8l7-5 7 5M5 16l7 5 7-5"/></svg></div>
+          <div>
+            <h2>Behavior &amp; limits</h2>
+            <p>Assumptions that scripts should encode.</p>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="panel">
+            <h4 style="margin-top:0">Connection</h4>
+            <ul>
+              <li>One TCP client at a time. Rapid sequential CLI invocations can hit resets while the old socket clears; the worker retries within <code>--timeout-ms</code>.</li>
+              <li>Reconnect backoff: 250 ms → 500 ms → 1 s → 2 s (cap). A fresh <code>init</code> runs after every reconnect.</li>
+              <li>Framing violations always drop the connection; the client never scans for a token.</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <h4 style="margin-top:0">Streaming</h4>
+            <ul>
+              <li>One outstanding request; frames are never queued. <code>watch</code> samples the newest frame, so sequence numbers can skip.</li>
+              <li>Target fps is a ceiling. Measured ~18 fps at 20 fps target; the extended-frame cadence is every 11th request.</li>
+              <li>Palette and OSD are baked into the YUV image; the CLI cannot recolor or hide them.</li>
+            </ul>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Exit code</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>0</code></td><td>Success. For <code>palette</code>/<code>unit</code>, confirmation succeeded or <code>--allow-mismatch</code> was set.</td></tr>
+              <tr><td><code>1</code></td><td>Runtime failure: connection/timeout, missing plane, unconfirmed palette/unit, PhotoCap parse error.</td></tr>
+              <tr><td><code>2</code></td><td>Usage error from argument parsing (bad index, unknown flag).</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout">
+          <div class="ci">i</div>
+          <div><strong>stdout vs stderr:</strong> data goes to stdout; reconnect notices, warnings and errors go to stderr.
+          Use <code>--quiet</code> to silence routine retries in scripts.</div>
+        </div>
+        <h4>Verified command surface</h4>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Wire form</th><th>Reply</th><th>Exposed as</th></tr></thead>
+            <tbody>
+              <tr><td><code>UTi_cmdsys:init</code></td><td><code>{init}</code>, 160 B</td><td><code>info</code>, unit confirmation</td></tr>
+              <tr><td><code>UTi_cmdsys:vFrame</code></td><td><code>{UTi_img}</code>, 115 227 / 311 835 B</td><td><code>frame</code>, <code>frames</code>, <code>measure</code>, <code>watch</code></td></tr>
+              <tr><td><code>UTi_cmdsys:PhotoCap</code></td><td><code>{UTi_Photo}</code>, ~550 KB</td><td><code>capture</code></td></tr>
+              <tr><td><code>UTi_cmdsys:colorChange+0..7</code></td><td>none</td><td><code>palette</code></td></tr>
+              <tr><td><code>UTi_cmdsys:measUnit+1+0 / +1+1 / +0+1</code></td><td>none</td><td><code>unit</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="small muted">No other command is reachable. In particular, <code>pipRectMove</code>,
+        <code>scaleUpdata</code>, <code>markTool</code>, <code>imgModel</code> and free-form arguments
+        are intentionally absent.</p>
+      </section>
+
+      <section class="doc" id="troubleshooting">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3 2 21h20z"/><path d="M12 9v5M12 17h.01"/></svg></div>
+          <div>
+            <h2>Troubleshooting</h2>
+            <p>Common failures and the shortest fix.</p>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="panel">
+            <h4 style="margin-top:0">“camera did not reach streaming”</h4>
+            <p class="small muted">Wrong IP/interface, camera AP not joined, or another client holds the connection. Try
+            <code>--ip 192.168.27.10</code>, check <code>ip route</code>, or increase <code>--timeout-ms</code>.</p>
+          </div>
+          <div class="panel">
+            <h4 style="margin-top:0">Connection reset on every command</h4>
+            <p class="small muted">The camera allows one client; a previous process or socket may still be closing.
+            Add a short delay between calls, or use <code>watch</code> for a single long session.</p>
+          </div>
+          <div class="panel">
+            <h4 style="margin-top:0">No live plane</h4>
+            <p class="small muted">Planes arrive on every 11th frame. Use <code>--require-plane</code> and raise
+            <code>--max-frames</code> or <code>--timeout-ms</code>. If the firmware never sends one, use <code>capture</code>.</p>
+          </div>
+          <div class="panel">
+            <h4 style="margin-top:0">PhotoCap timeout</h4>
+            <p class="small muted">The device needs ~3.3 s and writes to SD. Raise <code>--capture-timeout-ms</code>,
+            check the SD card, and avoid concurrent captures.</p>
+          </div>
+          <div class="panel">
+            <h4 style="margin-top:0">Unit mismatch</h4>
+            <p class="small muted">The CLI prints the reported byte. On tested firmware, returning from K can leave
+            byte <code>2</code>; a power cycle or camera-menu reset restores the unit. Use
+            <code>--allow-mismatch</code> only when scripts tolerate it.</p>
+          </div>
+          <div class="panel">
+            <h4 style="margin-top:0">Palette not confirmed</h4>
+            <p class="small muted">Detection compares frame means with reference signatures; device palette
+            order may differ from the spec table. Inspect <code>detected</code>/<code>distance</code> and use
+            <code>--allow-mismatch</code> if the visual result is correct.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="doc" id="reference">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 4h16v16H4z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg></div>
+          <div>
+            <h2>Reference</h2>
+            <p>Source, protocol sections and companion tools.</p>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="panel">
+            <h4 style="margin-top:0">Source</h4>
+            <ul>
+              <li><code>src/cli.rs</code> — subcommands, JSON, file writers</li>
+              <li><code>src/net.rs</code> — worker, reconnect, pacing</li>
+              <li><code>src/protocol.rs</code> — framing, typed commands</li>
+              <li><code>src/capture.rs</code> — sections, plane, mapping</li>
+              <li><code>src/frame.rs</code> — live frame and extended plane</li>
+              <li><code>src/palette.rs</code> — signature confirmation</li>
+            </ul>
+          </div>
+          <div class="panel">
+            <h4 style="margin-top:0">Protocol sections</h4>
+            <ul>
+              <li>§3 — commands and safety rule</li>
+              <li>§4 — <code>init</code> payload</li>
+              <li>§5 — <code>vFrame</code> and extended plane</li>
+              <li>§6 — <code>PhotoCap</code> sections and mapping</li>
+              <li>§13 — acceptance criteria</li>
+            </ul>
+          </div>
+        </div>
+        <div class="code">
+          <div class="code-head"><span class="lang">bash — cheat sheet</span><button class="copy" type="button">Copy</button></div>
+<pre><code>uti260b-cli info
+uti260b-cli frame --png f.png --plane f.f32 --require-plane
+uti260b-cli frames --count 10 --dir frames --png --yuv --plane
+uti260b-cli capture --dir cap --raw cap/raw.bin
+uti260b-cli measure --display 121,161
+uti260b-cli measure --temp-file cap/capture_temperature.f32 --display 121,161
+uti260b-cli measure --capture-file cap/raw.bin --plane 96,128
+uti260b-cli palette 3 --frames 10
+uti260b-cli unit celsius --settle-ms 1000
+uti260b-cli --json watch --sample 121,161</code></pre>
+        </div>
+        <div class="footer">
+          <span>uti260b-cli 0.1.0 · clean-room implementation · TCP 9527</span>
+          <span><a href="#top">Back to top</a> · <a href="../UTi260B-plus-protocol-spec.md">Protocol spec</a></span>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<button class="totop" id="totop" type="button" aria-label="Back to top" title="Back to top">
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+</button>
+
+<script>
+(() => {
+  const root = document.documentElement;
+  const themeBtn = document.getElementById('theme-toggle');
+  let stored = null;
+  try { stored = localStorage.getItem('uti260b-theme'); } catch {}
+  if (stored === 'light' || stored === 'dark') {
+    root.dataset.theme = stored;
+  } else if (matchMedia('(prefers-color-scheme: light)').matches) {
+    root.dataset.theme = 'light';
+  }
+  themeBtn.addEventListener('click', () => {
+    const next = root.dataset.theme === 'light' ? 'dark' : 'light';
+    root.dataset.theme = next;
+    try { localStorage.setItem('uti260b-theme', next); } catch {}
+  });
+
+  document.querySelectorAll('.copy').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const code = button.closest('.code')?.querySelector('code');
+      if (!code) return;
+      const text = code.innerText;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const area = document.createElement('textarea');
+        area.value = text;
+        area.style.position = 'fixed';
+        area.style.opacity = '0';
+        document.body.appendChild(area);
+        area.select();
+        document.execCommand('copy');
+        area.remove();
+      }
+      const old = button.textContent;
+      button.textContent = 'Copied';
+      button.disabled = true;
+      setTimeout(() => { button.textContent = old; button.disabled = false; }, 1400);
+    });
+  });
+
+  const progress = document.getElementById('progress');
+  const totop = document.getElementById('totop');
+  const updateScroll = () => {
+    const max = document.documentElement.scrollHeight - window.innerHeight;
+    const ratio = max > 0 ? window.scrollY / max : 0;
+    progress.style.width = `${Math.min(100, Math.max(0, ratio * 100))}%`;
+    totop.classList.toggle('show', window.scrollY > 900);
+  };
+  addEventListener('scroll', updateScroll, { passive: true });
+  updateScroll();
+  totop.addEventListener('click', () => window.scrollTo({ top: 0, behavior: 'smooth' }));
+
+  const links = Array.from(document.querySelectorAll('.nav a'));
+  const map = new Map();
+  links.forEach((link) => {
+    const id = decodeURIComponent(link.getAttribute('href').slice(1));
+    const section = document.getElementById(id);
+    if (section) map.set(section, link);
+  });
+  const setActive = (id) => {
+    links.forEach((link) => link.classList.toggle('active', link.getAttribute('href') === `#${id}`));
+  };
+  const observer = new IntersectionObserver((entries) => {
+    const visible = entries
+      .filter((entry) => entry.isIntersecting)
+      .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+    if (visible.length) setActive(visible[0].target.id);
+  }, { rootMargin: '-18% 0px -68% 0px', threshold: [0, 0.15, 0.4, 0.75] });
+  map.forEach((_, section) => observer.observe(section));
+  setActive('overview');
+})();
+</script>
+</body>
+</html>
