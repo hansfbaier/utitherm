@@ -5,13 +5,19 @@ plus an automation CLI — implemented from
 [`UTi260B-plus-protocol-spec.md`](UTi260B-plus-protocol-spec.md).
 No vendor code, libraries, credentials or fixed IP addresses are involved.
 
+Related documents: [`UTi-family-protocol-spec.md`](UTi-family-protocol-spec.md)
+generalises the same protocol to the other `UTi_cmdsys` models (UTi720B, UTi165B+,
+UTi716B, UTi320V+, UTi260V and the E/V/H/T tiers), and
+[`DEVICE-PROFILE.md`](DEVICE-PROFILE.md) records the platform, access and
+calibration layout of the reference unit.
+
 **CLI documentation:** open [`docs/cli.html`](docs/cli.html) in a browser for the
 full command reference, JSON schemas and capture file formats.
 
-Scope is the TCP 9527 protocol: `init`, the live `vFrame` stream and the
-`PhotoCap` full-resolution capture with its 192×256 f32 temperature plane.
-Commands are a typed whitelist because malformed arguments kill the device
-daemon and require a power cycle (spec §3).
+Scope is the TCP 9527 protocol — `init`, the live `vFrame` stream, `PhotoCap` and
+its 192×256 f32 temperature plane — plus read-only import of the camera's USB
+radiometric files (spec §11). Commands are a typed whitelist because malformed
+arguments kill the device daemon and require a power cycle (spec §3).
 
 ## Build and run
 
@@ -20,6 +26,7 @@ cargo build --release                       # GUI + CLI binaries
 cargo run --release --bin uti260b-viewer    # live mode, IP from default gateway
 cargo run --release --bin uti260b-viewer -- --ip 192.168.27.10
 cargo run --release --bin uti260b-cli -- info
+cargo run --release --bin uti260b-cli -- import --path /run/media/$USER/585A980C530F08BD
 ```
 
 Join the camera's Wi-Fi AP (`UTi260B+`) first, then press **Connect**.
@@ -42,11 +49,18 @@ Space toggles connecting when a text field does not have focus.
   appends the plane to every 11th frame (~0.6 s at 20 fps).
 - Shows the full `init` state, marking inferred `[I]` and unknown `[U]` fields,
   and surfaces unit changes as confirmed only after re-reading `init`.
-- **PhotoCap** button (user-initiated, ~3 s, writes a file on the camera SD card)
-  fetches a full-resolution capture and shows its statistics, section sizes and
-  the 192×256 geometry. Live frames also carry a lower-rate temperature plane.
-- Clicking the image samples the newest capture plane, or the most recent live
-  plane when no capture exists, through the documented mapping
+- **PhotoCap** button (user-initiated, several seconds, no file is written on the
+  camera: verified by listing the SD volume before and after) fetches a
+  full-resolution capture and shows its statistics, section sizes and the 192×256
+  geometry. Live frames also carry a lower-rate temperature plane — every 11th
+  frame, per spec §5.
+- **USB import** scans mounted camera volumes read-only, copies and validates
+  radiometric files on a dedicated worker, indexes them by SHA-256 and shows a
+  thumbnail gallery. Selecting an entry uses its plane for measurement. The
+  camera volume is never written, renamed or repaired. Import scanning pauses
+  while a live network session is active (spec §11.6).
+- Clicking the image samples the selected USB plane or capture first, then the
+  most recent live plane, through the documented mapping
   `plane = display / 1.25` (no rotation, no flip); it draws a small crosshair
   and shows the temperature in °C.
 - Palette changes (`colorChange+0..7`) are confirmed against following frames
@@ -65,6 +79,8 @@ Space toggles connecting when a text field does not have focus.
 [ net worker thread ]  blocking TcpStream, session state machine, reconnect backoff
                        write command → read token/length/payload/CRLF → validate
                        YUV→RGBA and PhotoCap decoding → ArcSwap / event stream
+[ usb worker thread ]  read-only volume scan, validate/copy/hash/index, thumbnails
+                       progress and imported records → channel
 [ UI thread ]          drain events, take newest frame, upload texture, paint
 ```
 
@@ -76,8 +92,13 @@ Space toggles connecting when a text field does not have focus.
 - Conversion and capture parsing run on the worker thread; the UI callback never
   touches the planes.
 - Socket timeouts (2 s default), `TCP_NODELAY` and `SO_KEEPALIVE` are set.
-  `PhotoCap` temporarily raises the read timeout to 15 s because the device needs
-  ~3.3 s (spec §6).
+  `PhotoCap` temporarily raises the read timeout to 30 s because a capture can
+  take several seconds (spec §6). Captures are serialised; a busy/error reply is
+  surfaced as retryable and the connection is kept.
+- When no frame has been requested for 5 s, the worker sends the fire-and-forget
+  `HeartBack` keep-alive (spec §5.3).
+- USB import runs on its own worker thread and communicates only by channel; a
+  vanished volume cannot stall the network thread or the render loop.
 - Shutdown joins the worker and unblocks a pending read with `shutdown(Both)`.
 
 ### Modules
@@ -89,6 +110,8 @@ Space toggles connecting when a text field does not have focus.
 | `src/capture.rs`         | `PhotoCap` sections, temperature plane, mapping, luma self-test    |
 | `src/net.rs`             | worker, state machine, command queue, stats, events                |
 | `src/replay.rs`          | fixture replay through the same parsers/UI                         |
+| `src/usb.rs`             | USB container parse/validate, cache, content-hash index            |
+| `src/usb_worker.rs`      | read-only USB volume scan and import worker                        |
 | `src/config.rs`          | config file, gateway discovery                                     |
 | `src/app.rs`             | egui front end, palette/unit confirmation, measurement overlay     |
 | `src/cli.rs`             | automation subcommands, JSON output, file writers                  |
@@ -112,6 +135,9 @@ uti260b-cli capture --dir capture --raw capture/raw.bin
 uti260b-cli measure --display 121,161
 uti260b-cli measure --temp-file capture/temperature.f32 --display 121,161
 uti260b-cli measure --capture-file capture/raw.bin --plane 96,128
+uti260b-cli measure --usb-file /media/UTi/DCIM/202610240001E.jpg --display 121,161
+uti260b-cli import --path /run/media/$USER/585A980C530F08BD --cache usb-cache
+uti260b-cli --json import --cache usb-cache --list
 uti260b-cli palette 3
 uti260b-cli unit celsius
 uti260b-cli watch --frames 100 --json --sample 121,161
@@ -131,6 +157,7 @@ Global options: `--ip <addr|auto>`, `--port`, `--config`, `--fps`,
 | `palette` | send `colorChange+0..7`, then check following frames                             |
 | `unit`    | send a verified `measUnit` pair, settle, re-init and report the unit byte        |
 | `watch`   | one line per frame; JSON lines with `--json`                                     |
+| `import`  | read-only USB scan, validate/copy/index radiometric files, or `--list` the index |
 
 - `measure` uses the live plane by default (waits for an extended frame). The
   mapping is `plane = display / 1.25`, plane 192×256.
@@ -138,11 +165,17 @@ Global options: `--ip <addr|auto>`, `--port`, `--config`, `--fps`,
   saves planes only.
 - JSON output is one object per command, except `watch`, which prints one object
   per frame.
-- `capture` writes a file on the camera SD card; expect ~3 s.
+- `capture` does not write to the camera SD card (verified); expect several
+  seconds. Concurrent captures are rejected by the device and surfaced as
+  retryable, never as a connection failure.
 - The camera accepts a single client at a time. Back-to-back CLI invocations may
   need a short gap; the worker retries within `--timeout-ms`.
+- USB import is strictly read-only: mount the volume read-only, never write,
+  rename, delete or repair it. Imported files live under `usb-cache/` keyed by
+  SHA-256 (`<sha>.jpg`, `<sha>_thumb.png`, `usb-index.json`). Auto-discovery uses
+  the configured `AUTORUN.INF` marker; override with `--usb-marker`.
 - Only verified commands are reachable: `init`, `vFrame`, `PhotoCap`,
-  `colorChange+0..7`, and `measUnit+1+0|+1+1|+0+1`.
+  `HeartBack`, `colorChange+0..7`, and `measUnit+1+0|+1+1|+0+1`.
 
 ## Commands (typed whitelist)
 
@@ -151,13 +184,14 @@ restart it (observed 2026-10-24). There is therefore **no free-form command
 input**: `protocol::Command` is the only way to emit bytes, and its parameterised
 variants are enumerated or range checked.
 
-| command  | form                                      | verified       |
-| -------- | ----------------------------------------- | -------------- |
-| init     | `UTi_cmdsys:init`                         | yes            |
-| vFrame   | `UTi_cmdsys:vFrame`                       | yes            |
-| PhotoCap | `UTi_cmdsys:PhotoCap`                     | yes            |
-| palette  | `UTi_cmdsys:colorChange+0..7`             | yes (no reply) |
-| unit     | `UTi_cmdsys:measUnit+1+0`, `+1+1`, `+0+1` | yes (no reply) |
+| command   | form                                      | verified       |
+| --------- | ----------------------------------------- | -------------- |
+| init      | `UTi_cmdsys:init`                         | yes            |
+| vFrame    | `UTi_cmdsys:vFrame`                       | yes            |
+| PhotoCap  | `UTi_cmdsys:PhotoCap`                     | yes            |
+| keepalive | `UTi_cmdsys:HeartBack`                    | yes (no reply) |
+| palette   | `UTi_cmdsys:colorChange+0..7`             | yes (no reply) |
+| unit      | `UTi_cmdsys:measUnit+1+0`, `+1+1`, `+0+1` | yes (no reply) |
 
 `pipRectMove` is documented as a binary frame (command name + `u32 BE` total
 length 38 + four `u16 LE` values + `"/n/a"`); the encoder is unit-tested but not
@@ -186,6 +220,25 @@ Live `vFrame` replies on this firmware come in two sizes: 115 227 B total
 (YUV + 3 key temperatures) and, on every 11th request, 311 835 B total with the
 same fields plus the 196 608-byte f32 plane appended after the key temperatures.
 
+### USB radiometric files
+
+The camera's USB volume contains `DCIM/YYYYMMDDnnnnnE.jpg`. Each file is:
+
+```text
+JPEG #1 (240x320 with OSD)
+u32 BE len2
+JPEG #2 (480x640, len2 bytes)
+u32 BE len2 (repeated)
+49 152 x { f32 BE temperature °C, u32 BE aux }   interleaved
+4 063-byte metadata block
+```
+
+Validation requires both length words to agree and
+`size = len(jpeg1) + 4 + len2 + 4 + 8*49152 + 4063`. Temperature samples must be
+inside a physical band (−40…400 °C). The plane is row-major 192×256 with the
+same 1.25 display mapping as `PhotoCap`. Imports preserve firmware, model,
+emissivity, distance, humidity, ambient and unit from the metadata block.
+
 `--verify-capture <file>` parses a stored reply (framed or bare payload), decodes
 section 0 as JPEG, and reports the Pearson correlation between its luma and the
 temperature plane sampled through the documented mapping. It fails if the
@@ -205,9 +258,15 @@ connect_timeout_ms = 2000
 read_timeout_ms = 2000
 target_fps = 20
 out_dir = "captures"
+
+[usb]
+marker = "UNIT UTi260B+"
 ```
 
-CLI flags override the file.
+CLI flags override the file. `[usb] marker` is the `AUTORUN.INF` substring used
+for volume detection; change it for a model with a different label (verbatim,
+including any `label=` text if you want it matched). `import --usb-marker`
+overrides it for one CLI run.
 
 ## Tests and replay
 
@@ -221,9 +280,10 @@ big-endian key temperatures, BT.601 conversion against a reference formula,
 exact bytes for every whitelisted command including the binary `pipRectMove`
 frame, `PhotoCap` section parsing and the 192-stride mapping/correlation,
 fixture round-trips, config parsing, replay loading, an end-to-end worker test
-against a fake camera (init, reconnect, no-reply commands, capture, extended
-live-plane frames), palette signature matching, capture round-trips, CLI argument
-parsing and PNG/YUV export. The suite has 54 tests.
+against a fake camera (init, reconnect, no-reply commands, capture and busy
+replies, extended live-plane frames), palette signature matching, capture
+round-trips, USB container validation/metadata/indexing, import-worker events,
+CLI argument parsing and PNG/YUV export. The suite has 64 tests.
 
 `--make-fixtures <dir>` writes a synthetic fixture set:
 
@@ -241,20 +301,27 @@ measurement plane, so the overlay and mapping can be exercised without hardware
 
 ## Spec notes
 
-- The spec says the `init` and `vFrame` requests are both 15 bytes; the literal
-  strings are 15 and 17 bytes. `PhotoCap` is 19 bytes, not the 15 stated in §6.
-  Requests are sent as the literal command string, so nothing depends on those
-  numbers.
+- Requests are sent as the literal command strings: `init` 15 bytes, `vFrame`
+  17, `PhotoCap` 19, `HeartBack` 20. The protocol has no request terminator.
 - The `init` colour-scale block decodes to 50.83 and 31.87 from the captured
   bytes (`4d f8 fe 41`), while the spec table prints 32.00 for the second value.
   The UI shows the decoded values and marks the block `[U]`.
-- Palette confirmation matches the reference mean-RGB/saturation signatures
-  (§3.1) against a decoded frame, which includes the OSD. It is a heuristic and
-  is labelled as detected, not measured.
+- Palette confirmation uses the one-scene mean-RGB/saturation references in
+  §3.1 as a loose check against a decoded frame including the OSD. It is a
+  heuristic, labelled as detected, not measured.
 - The synthetic `photocap.bin` is for framing/replay only; `--verify-capture` is
-  intended for the real `analysis/capture/session1/photocap_raw.bin` fixture.
-- Firmware 1.1.9 sends a live temperature plane on every 11th `vFrame`, contrary
-  to spec §5.2/§10. Payloads are accepted in both forms.
+  intended for a real `PhotoCap` reply such as the analysis fixture.
+- Firmware 1.1.9 sends a live temperature plane on every 11th `vFrame`
+  (311 835-byte total reply). The client accepts both base and extended
+  payloads; the spec now documents the same observation.
+- `PhotoCap` does not write to the camera SD card. A capture can take 10 s when
+  USB is bound; the read timeout is 30 s and concurrent captures are
+  client-serialised.
+- `HeartBack` is sent only after 5 s without a frame, in the full wire form
+  `UTi_cmdsys:HeartBack`; it has no reply and is fire-and-forget. The `sys:`
+  strings are handler names inside the device, not wire text.
+- USB metadata offsets vary slightly between files (firmware at 3980 or 3981 in
+  tested samples); the importer accepts both and validates the container size.
 - Frame pacing is scheduled from the request start. Scheduling from the reply
   arrival capped throughput at `RTT + interval` (~11 fps); the observed rate is
   now ~18 fps at a 20 fps target.
@@ -267,10 +334,20 @@ measurement plane, so the overlay and mapping can be exercised without hardware
 
 - Live measurement updates only every 11th frame (one plane per ~0.6 s at
   20 fps); `PhotoCap` gives a full-resolution plane and JPEGs.
-- Unit and palette semantics differ from the spec table on the tested firmware;
-  both are reported as detected/reported values, not silently trusted.
+- The live parser is reference-model only: I420 pixels plus no tail or the
+  196 608-byte f32 tail. Unknown payload lengths are rejected cleanly. The spec
+  permits this scope; RGB888 and u16-tail models are not decoded yet (spec §15.5).
+- Palette signatures are scene-dependent one-scene references, so confirmation
+  is deliberately loose; unit state can remain in the documented byte-2
+  collision after mixed `measUnit` commands. Both are reported as raw/detected
+  values, never silently trusted.
 - Palette cannot be recoloured client-side; the device must change it.
 - OSD cannot be hidden from this client (spec §12 E6); the sampling overlay is
   drawn on top of the image, outside the OSD region only by convention.
-- Gallery port 9528 and the USB radiometric container are not decoded.
+- Gallery port 9528 is not decoded.
+- USB auto-discovery scans common mount roots and requires `AUTORUN.INF` with
+  the configured marker (default `UNIT UTi260B+`) plus `DCIM/`; configure
+  `[usb] marker` in `uti260b.toml`, pass `--usb-marker`, or use `--path` for a
+  non-standard mount. The volume must already be mounted read-only; the client
+  never mounts or writes it.
 - `pipRectMove`, `scaleUpdata` and the unverified command arguments are not sent.

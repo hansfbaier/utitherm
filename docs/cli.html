@@ -511,6 +511,7 @@
         <a href="#cmd-frame"><span class="n">06</span> frame</a>
         <a href="#cmd-frames"><span class="n">07</span> frames</a>
         <a href="#cmd-capture"><span class="n">08</span> capture</a>
+        <a href="#cmd-import"><span class="n">+</span> import</a>
         <a href="#cmd-measure"><span class="n">09</span> measure</a>
         <a href="#cmd-palette"><span class="n">10</span> palette</a>
         <a href="#cmd-unit"><span class="n">11</span> unit</a>
@@ -524,6 +525,7 @@
         <a href="#files"><span class="n">14</span> File formats</a>
         <a href="#capture-files"><span class="n">15</span> Capture files</a>
         <a href="#capture-raw"><span class="n">16</span> Raw reply</a>
+        <a href="#usb"><span class="n">+</span> USB files</a>
         <a href="#mapping"><span class="n">17</span> Plane mapping</a>
       </nav>
     </div>
@@ -595,7 +597,7 @@
         </div>
         <div class="quick-card">
           <h3>Capture</h3>
-          <p><code>capture</code><br>Five sections, ~3 s, writes a file on the camera SD card.</p>
+          <p><code>capture</code><br>Five sections, several seconds. No SD-card write; captures are serialised.</p>
         </div>
       </div>
 
@@ -857,11 +859,14 @@ uti260b-cli --json frame --png shot.png --plane shot.f32 \
         <div class="cmd-body">
           <p>Runs <code>PhotoCap</code> once and writes every section. This is the
           full-resolution radiometric path; live frames also carry a 192×256 plane, but only on
-          every 11th request.</p>
-          <div class="callout danger">
+          every 11th request. Captures are serialised client-side; the device's busy reply is
+          surfaced as retryable.</p>
+          <div class="callout warn">
             <div class="ci">!</div>
-            <div><strong>Side effect:</strong> the camera writes a capture file to its SD card and
-            the exchange takes roughly 3 seconds. Do not run it in a tight loop.</div>
+            <div><strong>No SD-card write.</strong> A network capture does not create a file in
+            <code>DCIM/</code>. It takes several seconds (about 10 s when USB is bound), so do not
+            run it in a tight loop. Concurrent captures are rejected by the device; the client
+            serialises them and reports a busy reply as retryable.</div>
           </div>
           <div class="table-wrap">
             <table>
@@ -887,6 +892,56 @@ uti260b-cli --json capture --dir capture \
         </div>
       </article>
 
+      <!-- import -->
+      <article class="cmd" id="cmd-import">
+        <div class="cmd-head">
+          <span class="method read">IMPORT</span>
+          <h3>import</h3>
+          <span class="syn">uti260b-cli import --path DIR</span>
+        </div>
+        <div class="cmd-body">
+          <p>Scans a mounted camera volume <strong>read-only</strong>, validates every
+          radiometric container, copies it to a host cache and indexes it by SHA-256. Existing
+          hashes are skipped. Thumbnails come from JPEG #1 and are generated on the import
+          worker, never in the render loop.</p>
+          <div class="callout danger">
+            <div class="ci">!</div>
+            <div><strong>Never write to the camera volume.</strong> Mount it read-only where the
+            platform allows. Do not create, rename, delete or repair files, and decline any
+            “scan and fix” prompt. The camera also mounts the same NTFS partition read-write.</div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Flag</th><th>Default</th><th>Effect</th></tr></thead>
+              <tbody>
+                <tr><td><code>--path &lt;PATH&gt;</code></td><td>scan mounts</td><td>Mount root, <code>DCIM</code> directory, or one .jpg file.</td></tr>
+                <tr><td><code>--cache &lt;DIR&gt;</code></td><td><code>usb-cache</code></td><td>Host cache and <code>usb-index.json</code>.</td></tr>
+                <tr><td><code>--list</code></td><td>off</td><td>Only list already indexed entries; no scan.</td></tr>
+                <tr><td><code>--usb-marker &lt;TEXT&gt;</code></td><td><code>[usb] marker</code>, else <code>UNIT UTi260B+</code></td><td>Substring expected in <code>AUTORUN.INF</code>; override for another model's label.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="code">
+            <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
+<pre><code><span class="cm"># auto-detect a mounted UTi260B+ volume</span>
+uti260b-cli --json import --cache usb-cache
+
+<span class="cm"># explicit read-only mount, then list what was indexed</span>
+uti260b-cli import --path /run/media/$USER/585A980C530F08BD --cache usb-cache
+uti260b-cli --json import --cache usb-cache --list
+
+<span class="cm"># one file, then sample it offline</span>
+uti260b-cli import --path /media/UTi/DCIM/202610240001E.jpg
+uti260b-cli measure --usb-file /media/UTi/DCIM/202610240001E.jpg --display 121,161</code></pre>
+          </div>
+          <p class="small muted">Auto-discovery requires a mounted volume whose root contains
+          <code>AUTORUN.INF</code> with the configured marker (default <code>UNIT UTi260B+</code>)
+          and a <code>DCIM/</code> directory. Set <code>[usb] marker</code> in the config or pass
+          <code>--usb-marker</code> for another model. Use <code>--path</code> for non-standard
+          mounts. The GUI has the same importer with a thumbnail gallery.</p>
+        </div>
+      </article>
+
       <!-- measure -->
       <article class="cmd" id="cmd-measure">
         <div class="cmd-head">
@@ -905,6 +960,7 @@ uti260b-cli --json capture --dir capture \
                 <tr><td><code>--plane PX,PY</code></td><td>Direct 192×256 plane coordinate.</td></tr>
                 <tr><td><code>--temp-file PATH</code></td><td>Read a raw 196 608-byte f32 LE plane; no network.</td></tr>
                 <tr><td><code>--capture-file PATH</code></td><td>Read a framed or bare PhotoCap reply; no network.</td></tr>
+                <tr><td><code>--usb-file PATH</code></td><td>Read one USB radiometric container; no network.</td></tr>
               </tbody>
             </table>
           </div>
@@ -918,7 +974,8 @@ uti260b-cli --json measure --display 121,161
 
 <span class="cm"># fully offline</span>
 uti260b-cli --json measure --temp-file scene42_temperature.f32 --display 121,161
-uti260b-cli --json measure --capture-file scene42_raw.bin --plane 96,128</code></pre>
+uti260b-cli --json measure --capture-file scene42_raw.bin --plane 96,128
+uti260b-cli --json measure --usb-file /media/UTi/DCIM/202610240001E.jpg --display 121,161</code></pre>
           </div>
         </div>
       </article>
@@ -1237,6 +1294,15 @@ uti260b-cli --json watch | jq -r '[.seq, .key_c[0]] | @csv' &gt; keys.csv</code>
             <p>Base or extended vFrame, including token, length and CRLF. Not written by default; useful for protocol fixtures.</p>
             <div class="fmt">base = YUV + 12 B keys; extended = base + 196 608 B plane</div>
           </div>
+          <div class="file-card">
+            <div class="fhead">
+              <div class="file-icon">USB</div>
+              <h4>Radiometric container</h4>
+              <span class="bytes">~0.6–0.7 MB</span>
+            </div>
+            <p>Camera DCIM file: two JPEGs, interleaved f32 temperatures + aux, metadata. Imported read-only and indexed by SHA-256.</p>
+            <div class="fmt"><code>import --path</code> · <code>measure --usb-file</code></div>
+          </div>
         </div>
 
         <h3>Wire layouts</h3>
@@ -1456,6 +1522,101 @@ uti260b-viewer --verify-capture capture_raw.bin</code></pre>
         </div>
       </section>
 
+      <section class="doc" id="usb">
+        <div class="sec-head">
+          <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 3v5M8 8h8v5a4 4 0 0 1-8 0z"/><path d="M12 17v4"/></svg></div>
+          <div>
+            <h2>USB radiometric files</h2>
+            <p>Second full-resolution source; offline, read-only, no credentials.</p>
+          </div>
+        </div>
+        <div class="callout danger">
+          <div class="ci">!</div>
+          <div><strong>Read-only by design.</strong> The gadget and the camera both mount the same
+          NTFS partition. The client only opens files for reading, copies them to the host cache and
+          never writes, renames, deletes or repairs anything on the camera volume.</div>
+        </div>
+        <div class="panel">
+          <div class="ribbon" aria-label="USB radiometric container layout">
+            <span class="seg sec0" style="flex:5">JPEG #1<small>240×320 + OSD</small></span>
+            <span class="seg len" style="flex:1;min-width:52px">len2<small>u32 BE</small></span>
+            <span class="seg sec2" style="flex:6">JPEG #2<small>480×640</small></span>
+            <span class="seg len" style="flex:1;min-width:52px">len2<small>u32 BE</small></span>
+            <span class="seg sec1" style="flex:9">records<small>49 152 × 8 B</small></span>
+            <span class="seg sec4" style="flex:2">metadata<small>4 063 B</small></span>
+          </div>
+          <p class="small muted" style="margin:12px 0 0">
+            Records are <strong>interleaved</strong>: <code>f32 BE °C</code> then
+            <code>u32 BE aux</code>, 49 152 times. Reading the block as a flat float array yields
+            half garbage.
+          </p>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Field</th><th>Encoding</th><th>Notes</th></tr></thead>
+            <tbody>
+              <tr><td>JPEG #1</td><td>baseline JPEG</td><td>240×320 with OSD; thumbnail source</td></tr>
+              <tr><td>len2</td><td>u32 BE</td><td>appears before <em>and</em> after JPEG #2; both must match</td></tr>
+              <tr><td>JPEG #2</td><td>baseline JPEG</td><td>480×640, clean image</td></tr>
+              <tr><td>records</td><td>f32 BE + u32 BE</td><td>192×256 plane, row-major, interleaved with <code>aux</code></td></tr>
+              <tr><td>metadata</td><td>fixed offsets, ASCII/raw</td><td>firmware, model, emissivity, distance, humidity, ambient, unit</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h4>Validation and safety</h4>
+        <div class="steps">
+        <div class="step"><p><strong>Structure:</strong> two JPEG SOI/EOI pairs, both length words equal, and
+        <code>size = len(jpeg1) + 4 + len2 + 4 + 8×49152 + 4063</code>.</p></div>
+        <div class="step"><p><strong>Physics:</strong> every temperature must be finite and inside
+        −40…400 °C. A planar/misaligned read produces ±1e30 values and is rejected.</p></div>
+        <div class="step"><p><strong>Stability:</strong> the worker waits for size and mtime to be
+        unchanged across two samples ~300 ms apart, reads the file in one pass, then copies it.</p></div>
+        <div class="step"><p><strong>Identity:</strong> SHA-256 of the file is the index key; re-importing
+        the same card does not duplicate entries. Firmware, model, emissivity, distance, humidity,
+        ambient and unit are preserved with the image.</p></div>
+        <div class="step"><p><strong>Failure:</strong> a rejected file is retried once after ~500 ms, then
+        recorded as unreadable; nothing on the camera is modified.</p></div>
+        <div class="step"><p><strong>Live sessions:</strong> the GUI pauses USB scanning while a network
+        stream is active. The hardware can run both, but the design rule keeps the live path and
+        import from competing.</p></div>
+        </div>
+        <h4>Cache layout</h4>
+        <div class="code">
+          <div class="code-head"><span class="lang">usb-cache/</span><button class="copy" type="button">Copy</button></div>
+<pre><code>usb-cache/
+├── &lt;sha256&gt;.jpg             # verbatim copy of the source container
+├── &lt;sha256&gt;_thumb.png       # JPEG #1, decoded on the import worker
+└── usb-index.json           # metadata, stats, source name, capture date</code></pre>
+        </div>
+        <h4>Reading an imported plane</h4>
+        <div class="code">
+          <div class="code-head"><span class="lang">python — parse interleaved records</span><button class="copy" type="button">Copy</button></div>
+<pre><code>import struct, numpy as np
+
+blob = open("202610240001E.jpg", "rb").read()
+# jpeg1_end is the first FFD9; find it in your parser
+# records start after: jpeg1 + u32 len2 + jpeg2 + u32 len2
+record_size = 8
+samples = 192 * 256
+temp = np.empty(samples, dtype="&lt;f4")
+aux  = np.empty(samples, dtype="&gt;u4")
+for i in range(samples):
+    off = records_start + i * record_size
+    temp[i] = struct.unpack_from("&gt;f", blob, off)[0]
+    aux[i]  = struct.unpack_from("&gt;I", blob, off + 4)[0]
+plane = temp.reshape(256, 192)
+
+x, y = 121, 161
+print(plane[int(y / 1.25), int(x / 1.25)])   # °C</code></pre>
+        </div>
+        <div class="callout">
+          <div class="ci">i</div>
+          <div><strong>Same geometry as PhotoCap.</strong> Plane 192×256, stride 192, no rotation or
+          flip, <code>plane = display / 1.25</code>. USB files keep the <code>aux</code> word and
+          settings metadata but drop the u16 raw plane.</div>
+        </div>
+      </section>
+
       <section class="doc" id="mapping">
         <div class="sec-head">
           <div class="sec-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><path d="M10 6.5h4M14 17.5h-4"/></svg></div>
@@ -1657,6 +1818,8 @@ done</code></pre>
             <ul>
               <li>One outstanding request; frames are never queued. <code>watch</code> samples the newest frame, so sequence numbers can skip.</li>
               <li>Target fps is a ceiling. Measured ~18 fps at 20 fps target; the extended-frame cadence is every 11th request.</li>
+              <li>After 5 s without a frame the worker sends <code>HeartBack</code> (no reply, no payload).</li>
+              <li><code>PhotoCap</code> is serialised client-side. A busy/error reply is retryable and does not drop the connection.</li>
               <li>Palette and OSD are baked into the YUV image; the CLI cannot recolor or hide them.</li>
             </ul>
           </div>
@@ -1684,6 +1847,7 @@ done</code></pre>
               <tr><td><code>UTi_cmdsys:init</code></td><td><code>{init}</code>, 160 B</td><td><code>info</code>, unit confirmation</td></tr>
               <tr><td><code>UTi_cmdsys:vFrame</code></td><td><code>{UTi_img}</code>, 115 227 / 311 835 B</td><td><code>frame</code>, <code>frames</code>, <code>measure</code>, <code>watch</code></td></tr>
               <tr><td><code>UTi_cmdsys:PhotoCap</code></td><td><code>{UTi_Photo}</code>, ~550 KB</td><td><code>capture</code></td></tr>
+              <tr><td><code>UTi_cmdsys:HeartBack</code></td><td>none</td><td>idle keep-alive</td></tr>
               <tr><td><code>UTi_cmdsys:colorChange+0..7</code></td><td>none</td><td><code>palette</code></td></tr>
               <tr><td><code>UTi_cmdsys:measUnit+1+0 / +1+1 / +0+1</code></td><td>none</td><td><code>unit</code></td></tr>
             </tbody>
@@ -1720,8 +1884,9 @@ done</code></pre>
           </div>
           <div class="panel">
             <h4 style="margin-top:0">PhotoCap timeout</h4>
-            <p class="small muted">The device needs ~3.3 s and writes to SD. Raise <code>--capture-timeout-ms</code>,
-            check the SD card, and avoid concurrent captures.</p>
+            <p class="small muted">The device needs several seconds (10 s with USB bound). Raise
+            <code>--capture-timeout-ms</code>, avoid concurrent captures, and retry on a busy reply.
+            No SD-card write is involved.</p>
           </div>
           <div class="panel">
             <h4 style="margin-top:0">Unit mismatch</h4>
@@ -1731,9 +1896,10 @@ done</code></pre>
           </div>
           <div class="panel">
             <h4 style="margin-top:0">Palette not confirmed</h4>
-            <p class="small muted">Detection compares frame means with reference signatures; device palette
-            order may differ from the spec table. Inspect <code>detected</code>/<code>distance</code> and use
-            <code>--allow-mismatch</code> if the visual result is correct.</p>
+            <p class="small muted">Detection compares frame means with the spec's one-scene references;
+            scene and OSD content shift the numbers, so confirmation is deliberately loose. Inspect
+            <code>detected</code>/<code>distance</code> and use <code>--allow-mismatch</code> if the visual
+            result is correct.</p>
           </div>
         </div>
       </section>
@@ -1778,6 +1944,8 @@ uti260b-cli capture --dir cap --raw cap/raw.bin
 uti260b-cli measure --display 121,161
 uti260b-cli measure --temp-file cap/capture_temperature.f32 --display 121,161
 uti260b-cli measure --capture-file cap/raw.bin --plane 96,128
+uti260b-cli measure --usb-file /media/UTi/DCIM/202610240001E.jpg --display 121,161
+uti260b-cli import --path /run/media/$USER/585A980C530F08BD
 uti260b-cli palette 3 --frames 10
 uti260b-cli unit celsius --settle-ms 1000
 uti260b-cli --json watch --sample 121,161</code></pre>

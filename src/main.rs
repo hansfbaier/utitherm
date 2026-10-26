@@ -49,14 +49,17 @@ CONFIG (TOML subset):
     target_fps = 20
     out_dir = \"captures\"
 
+    [usb]
+    marker = \"UNIT UTi260B+\"   # AUTORUN.INF marker for volume discovery
+
 NOTES:
     A device account, credential or fixed camera IP is not needed or stored.
     'auto' reads the host default gateway: while joined to the camera's AP the
     camera *is* the gateway. If discovery is unavailable, pass --ip.
 
     The command channel is a typed whitelist (no free text): the device daemon
-    exits on a malformed command and needs a power cycle. PhotoCap writes a file
-    to the camera SD card and takes about 3 seconds.
+    exits on a malformed command and needs a power cycle. PhotoCap takes several
+    seconds and does not write to the camera SD card.
 ";
 
 #[derive(Default)]
