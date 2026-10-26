@@ -3,10 +3,6 @@
 ### Independent Rust + egui client and CLI for UNI-T `UTi_cmdsys` thermal imagers
 
 <p align="center">
-  <img alt="utitherm live view" src="docs/screenshot.png" width="100%">
-</p>
-
-<p align="center">
   <a href="#quick-start"><img alt="Rust" src="https://img.shields.io/badge/Rust-2024-orange?logo=rust"></a>
   <a href="#testing"><img alt="tests" src="https://img.shields.io/badge/tests-82-brightgreen"></a>
   <a href="UTi-family-protocol-spec.md"><img alt="protocol" src="https://img.shields.io/badge/protocol-UTi__cmdsys-0f766e"></a>
@@ -16,6 +12,10 @@
 <p align="center">
   <strong>Live thermal video · radiometric measurement · full-resolution capture · read-only USB import</strong><br>
   Clean-room implementation. No vendor SDK, no linked vendor code, no fixed camera IP.
+</p>
+
+<p align="center">
+  <img alt="utitherm live view" src="docs/screenshot.png" width="100%">
 </p>
 
 ---
