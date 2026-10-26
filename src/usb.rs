@@ -128,31 +128,49 @@ pub fn parse_usb_bytes(source_path: &Path, bytes: &[u8]) -> UsbResult<UsbImage> 
         ));
     }
 
-    let len2 = read_u32(bytes, jpeg1_end)? as usize;
-    let jpeg2_start = jpeg1_end + 4;
-    let jpeg2_end = jpeg2_start
-        .checked_add(len2)
-        .ok_or_else(|| "JPEG #2 length overflows".to_owned())?;
-    if jpeg2_end + 4 > bytes.len() {
-        return Err(format!(
-            "JPEG #2 length {len2} exceeds file ({} bytes)",
-            bytes.len()
-        ));
-    }
-    let len2_again = read_u32(bytes, jpeg2_end)? as usize;
-    if len2 != len2_again {
-        return Err(format!(
-            "length words disagree: {len2} before JPEG #2, {len2_again} after"
-        ));
-    }
-    if len2 < 4
-        || bytes[jpeg2_start..jpeg2_start + 2] != [0xFF, 0xD8]
-        || bytes[jpeg2_end - 2..jpeg2_end] != [0xFF, 0xD9]
-    {
-        return Err("JPEG #2 is not bounded by SOI/EOI".to_owned());
-    }
-
-    let records_start = jpeg2_end + 4;
+    // The visible JPEG is optional (§11.4): a thermal-only file stores
+    // i32 BE -1 followed by a zero length word, then goes straight to records.
+    let len2 = i32::from_be_bytes(
+        bytes[jpeg1_end..jpeg1_end + 4]
+            .try_into()
+            .expect("slice of four"),
+    );
+    let (jpeg2_start, jpeg2_end, records_start) = if len2 == -1 {
+        let absent = read_u32(bytes, jpeg1_end + 4)?;
+        if absent != 0 {
+            return Err(format!(
+                "thermal-only container must have a zero second length word, got {absent}"
+            ));
+        }
+        (jpeg1_end + 4, jpeg1_end + 4, jpeg1_end + 8)
+    } else if len2 > 0 {
+        let len2 = len2 as usize;
+        let jpeg2_start = jpeg1_end + 4;
+        let jpeg2_end = jpeg2_start
+            .checked_add(len2)
+            .ok_or_else(|| "JPEG #2 length overflows".to_owned())?;
+        if jpeg2_end + 4 > bytes.len() {
+            return Err(format!(
+                "JPEG #2 length {len2} exceeds file ({} bytes)",
+                bytes.len()
+            ));
+        }
+        let len2_again = read_u32(bytes, jpeg2_end)? as usize;
+        if len2 != len2_again {
+            return Err(format!(
+                "length words disagree: {len2} before JPEG #2, {len2_again} after"
+            ));
+        }
+        if len2 < 4
+            || bytes[jpeg2_start..jpeg2_start + 2] != [0xFF, 0xD8]
+            || bytes[jpeg2_end - 2..jpeg2_end] != [0xFF, 0xD9]
+        {
+            return Err("JPEG #2 is not bounded by SOI/EOI".to_owned());
+        }
+        (jpeg2_start, jpeg2_end, jpeg2_end + 4)
+    } else {
+        return Err(format!("invalid JPEG #2 length {len2}"));
+    };
     let metadata_start = records_start
         .checked_add(USB_RECORDS_BYTES)
         .ok_or_else(|| "record block overflows".to_owned())?;
@@ -467,10 +485,24 @@ fn parse_metadata(block: &[u8]) -> UsbMetadata {
         .unwrap_or_default();
     let model = ascii_at(block, 3_990, 16).unwrap_or_default();
     let mut versions = Vec::new();
-    for (offset, len) in [(3_970, 4), (3_975, 5)] {
-        if let Some(value) = ascii_at(block, offset, len) {
+    // The version window is not fixed-width: some files store `1.0` and `T2.0`
+    // contiguously as `1.0T2.0`, others leave a NUL or a one-byte gap. Split the
+    // printable window around the known tokens instead of trusting one offset.
+    if let Some(value) = ascii_at(block, 3_970, 12) {
+        if value.starts_with("1.0") {
+            versions.push("1.0".to_owned());
+            let rest = value.strip_prefix("1.0").unwrap_or_default();
+            if rest.starts_with("T2.0") {
+                versions.push("T2.0".to_owned());
+            }
+        } else {
             versions.push(value);
         }
+    }
+    if versions.len() < 2
+        && let Some(value) = ascii_at(block, 3_975, 5)
+    {
+        versions.push(value);
     }
     if !firmware.is_empty() {
         versions.push(firmware.clone());
@@ -666,6 +698,18 @@ pub(crate) mod tests {
         bytes
     }
 
+    pub(crate) fn synthetic_thermal_only_container() -> Vec<u8> {
+        let dual = synthetic_container();
+        let jpeg1_end = find_eoi(&dual, 2).unwrap();
+        let len2 = read_u32(&dual, jpeg1_end).unwrap() as usize;
+        let records_start = jpeg1_end + 4 + len2 + 4;
+        let mut bytes = dual[..jpeg1_end].to_vec();
+        bytes.extend_from_slice(&(-1i32).to_be_bytes());
+        bytes.extend_from_slice(&0u32.to_be_bytes());
+        bytes.extend_from_slice(&dual[records_start..]);
+        bytes
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "uti260b-usb-test-{name}-{}-{:?}",
@@ -695,6 +739,15 @@ pub(crate) mod tests {
         assert_eq!(image.captured.as_deref(), Some("2026-10-24"));
         assert_eq!(image.sha256.len(), 64);
         assert!(image.thumbnail_rgba.is_none(), "stub JPEG is not decodable");
+    }
+
+    #[test]
+    fn parses_thermal_only_container_without_visible_jpeg() {
+        let bytes = synthetic_thermal_only_container();
+        let image = parse_usb_bytes(Path::new("shutter.jpg"), &bytes).expect("parse");
+        assert!(image.jpeg2.is_empty());
+        assert_eq!(image.temperature_c.len(), TEMP_PLANE_SAMPLES);
+        assert!((image.temperature_c[0] - 20.0).abs() < 1e-6);
     }
 
     #[test]
