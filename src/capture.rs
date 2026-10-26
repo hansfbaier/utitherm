@@ -155,25 +155,12 @@ impl Capture {
     }
 
     pub fn stats(&self) -> TempStats {
-        let mut min = f32::INFINITY;
-        let mut max = f32::NEG_INFINITY;
-        let mut sum = 0.0f64;
-        let mut sum_sq = 0.0f64;
-        for &value in &self.temperature_c {
-            min = min.min(value);
-            max = max.max(value);
-            sum += f64::from(value);
-            sum_sq += f64::from(value) * f64::from(value);
-        }
-        let n = self.temperature_c.len().max(1) as f64;
-        let mean = sum / n;
-        let variance = (sum_sq / n - mean * mean).max(0.0);
-        TempStats {
-            min,
-            max,
-            mean: mean as f32,
-            std_dev: variance.sqrt() as f32,
-        }
+        plane_stats(&self.temperature_c).unwrap_or(TempStats {
+            min: f32::NAN,
+            max: f32::NAN,
+            mean: f32::NAN,
+            std_dev: f32::NAN,
+        })
     }
 
     /// Sample the plane at a display pixel coordinate (0..240, 0..320).
@@ -200,6 +187,75 @@ impl Capture {
     pub fn write_y16_plane(&self, path: &Path) -> std::io::Result<()> {
         fs::write(path, &self.y16)
     }
+
+    /// Rebuild the bare section stream for a `PhotoCap` reply.
+    pub fn to_payload(&self) -> Vec<u8> {
+        let mut temperature = Vec::with_capacity(self.temperature_c.len() * 4);
+        for value in &self.temperature_c {
+            temperature.extend_from_slice(&value.to_le_bytes());
+        }
+        let sections: [&[u8]; 5] = [
+            &self.shot_jpeg,
+            &temperature,
+            &self.vis_jpeg,
+            &self.y16,
+            &self.tail,
+        ];
+        let mut payload = Vec::new();
+        for section in sections {
+            payload.extend_from_slice(&(section.len() as u32).to_be_bytes());
+            payload.extend_from_slice(section);
+        }
+        payload
+    }
+
+    /// Rebuild the full framed `PhotoCap` reply.
+    pub fn to_message(&self) -> Vec<u8> {
+        protocol::encode_message(TOKEN_PHOTOCAP, &self.to_payload())
+    }
+}
+
+/// Statistics for a 192x256 f32 plane (PhotoCap section 1 or a live plane).
+pub fn plane_stats(plane: &[f32]) -> Option<TempStats> {
+    if plane.len() != TEMP_PLANE_SAMPLES {
+        return None;
+    }
+    let mut min = f32::INFINITY;
+    let mut max = f32::NEG_INFINITY;
+    let mut sum = 0.0f64;
+    let mut sum_sq = 0.0f64;
+    let mut count = 0u32;
+    for &value in plane {
+        if !value.is_finite() {
+            continue;
+        }
+        min = min.min(value);
+        max = max.max(value);
+        sum += f64::from(value);
+        sum_sq += f64::from(value) * f64::from(value);
+        count += 1;
+    }
+    if count == 0 {
+        return None;
+    }
+    let n = f64::from(count);
+    let mean = sum / n;
+    let variance = (sum_sq / n - mean * mean).max(0.0);
+    Some(TempStats {
+        min,
+        max,
+        mean: mean as f32,
+        std_dev: variance.sqrt() as f32,
+    })
+}
+
+/// Sample a display coordinate directly from a 192x256 f32 plane.
+pub fn sample_plane(plane: &[f32], display_x: f32, display_y: f32) -> Option<f32> {
+    if plane.len() != TEMP_PLANE_SAMPLES {
+        return None;
+    }
+    let (px, py) = plane_coords(display_x, display_y)?;
+    plane.get(py * TEMP_PLANE_W + px).copied()
 }
 
 fn is_jpeg(bytes: &[u8]) -> bool {
@@ -283,12 +339,9 @@ pub struct VerifyReport {
     pub correlation: f32,
 }
 
-/// Parse a stored `PhotoCap` reply (framed or bare payload) and compute the
-/// documented luma correlation against the OSD screenshot.
-pub fn verify_capture_file(path: &Path) -> std::result::Result<VerifyReport, String> {
+/// Load a stored `PhotoCap` reply, framed or as a bare payload dump.
+pub fn load_capture_file(path: &Path) -> std::result::Result<Capture, String> {
     let bytes = fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-
-    // Accept either the full framed reply or a bare payload dump.
     let payload = match protocol::read_message(&mut Cursor::new(&bytes), None) {
         Ok(message) => {
             if message.token != TOKEN_PHOTOCAP {
@@ -302,8 +355,13 @@ pub fn verify_capture_file(path: &Path) -> std::result::Result<VerifyReport, Str
         }
         Err(_) => bytes,
     };
+    Capture::parse(&payload).map_err(|e| format!("{}: {e}", path.display()))
+}
 
-    let capture = Capture::parse(&payload).map_err(|e| format!("{}: {e}", path.display()))?;
+/// Parse a stored `PhotoCap` reply (framed or bare payload) and compute the
+/// documented luma correlation against the OSD screenshot.
+pub fn verify_capture_file(path: &Path) -> std::result::Result<VerifyReport, String> {
+    let capture = load_capture_file(path)?;
     let (luma, width, height) = decode_luma(&capture.shot_jpeg)?;
     if (width, height) != (FRAME_W, FRAME_H) {
         return Err(format!(
@@ -448,6 +506,16 @@ mod tests {
             capture.temperature_at_display(0.0, 0.0),
             capture.temperature_at_plane(0, 0)
         );
+    }
+
+    #[test]
+    fn capture_roundtrips_through_payload() {
+        let message = crate::fixtures::photocap_message();
+        let capture = Capture::parse(&crate::fixtures::photocap_payload()).expect("fixture");
+        assert_eq!(capture.to_message(), message);
+        let reparsed = Capture::parse(&capture.to_payload()).expect("payload roundtrip");
+        assert_eq!(reparsed.temperature_c, capture.temperature_c);
+        assert_eq!(reparsed.shot_jpeg, capture.shot_jpeg);
     }
 
     #[test]

@@ -31,6 +31,7 @@ const CONTROL_POLL: Duration = Duration::from_millis(50);
 struct FrameFixture {
     yuv: Vec<u8>,
     keys: [f32; 3],
+    plane: Option<Vec<u8>>,
     source: String,
 }
 
@@ -192,6 +193,7 @@ fn run(
         let frame = Arc::new(LiveFrame::decode(
             &fixture.yuv,
             fixture.keys,
+            fixture.plane.as_deref(),
             seq,
             Duration::ZERO,
         ));
@@ -282,6 +284,7 @@ fn load(path: &Path) -> Result<FixtureSet, String> {
             set.frames.push(FrameFixture {
                 yuv: bytes,
                 keys: [f32::NAN; 3],
+                plane: None,
                 source: file.display().to_string(),
             });
             continue;
@@ -314,6 +317,7 @@ fn load(path: &Path) -> Result<FixtureSet, String> {
                             Ok(frame) => set.frames.push(FrameFixture {
                                 yuv: frame.yuv.to_vec(),
                                 keys: frame.key_c,
+                                plane: frame.plane.map(|plane| plane.to_vec()),
                                 source: file.display().to_string(),
                             }),
                             Err(err) => set.skipped.push(format!(
@@ -331,6 +335,7 @@ fn load(path: &Path) -> Result<FixtureSet, String> {
                         set.frames.push(FrameFixture {
                             yuv: bytes,
                             keys: [f32::NAN; 3],
+                            plane: None,
                             source: file.display().to_string(),
                         });
                     } else {

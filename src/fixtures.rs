@@ -172,15 +172,37 @@ pub fn sample_plane() -> Vec<f32> {
     plane
 }
 
+/// Synthetic live temperature plane, f32 LE, 192x256.
+pub fn sample_plane_bytes() -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(crate::capture::TEMP_PLANE_BYTES);
+    for value in sample_plane() {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+
+/// Extended `vFrame` reply as the device sends on every 11th request:
+/// YUV + key temps + live 192x256 f32 plane.
+#[cfg(test)]
+pub fn vframe_extended_message() -> Vec<u8> {
+    let plane_bytes = sample_plane_bytes();
+    let mut payload = Vec::with_capacity(VFRAME_PAYLOAD_LEN + plane_bytes.len());
+    payload.extend_from_slice(&yuv_frame());
+    payload.extend_from_slice(&SAMPLE_KEY_BYTES);
+    payload.extend_from_slice(&plane_bytes);
+    assert_eq!(
+        payload.len(),
+        VFRAME_PAYLOAD_LEN + crate::protocol::LIVE_PLANE_BYTES
+    );
+    protocol::encode_message(TOKEN_VFRAME, &payload)
+}
+
 /// Bare `PhotoCap` payload with the documented section geometry.
 ///
 /// Sections 0 and 2 are placeholder JPEG marker wrappers, not decodable images:
 /// enough to exercise framing and replay, not to run the luma self-test.
 pub fn photocap_payload() -> Vec<u8> {
-    let mut plane_bytes = Vec::with_capacity(capture::TEMP_PLANE_BYTES);
-    for value in sample_plane() {
-        plane_bytes.extend_from_slice(&value.to_le_bytes());
-    }
+    let plane_bytes = sample_plane_bytes();
 
     // JPEG stubs have the observed sizes; only the marker wrappers are valid.
     let shot = fake_jpeg(54_057);
@@ -254,6 +276,11 @@ mod tests {
         assert_eq!(vframe_message().len(), 115_227);
         assert_eq!(yuv_frame().len(), 115_200);
         assert_eq!(photocap_message().len(), 563_661);
+        assert_eq!(vframe_extended_message().len(), 311_835);
+        assert_eq!(
+            sample_plane_bytes().len() / 4,
+            crate::protocol::LIVE_PLANE_SAMPLES
+        );
     }
 
     #[test]

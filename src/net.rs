@@ -20,7 +20,7 @@ use socket2::{SockRef, TcpKeepalive};
 
 use crate::capture::Capture;
 use crate::frame::LiveFrame;
-use crate::protocol::{self, Command, INIT_MESSAGE_LEN, InitReply, ProtoError, VFRAME_PAYLOAD_LEN};
+use crate::protocol::{self, Command, INIT_MESSAGE_LEN, InitReply, ProtoError};
 
 /// Reconnect backoff schedule (§7).
 const BACKOFF_MS: [u64; 4] = [250, 500, 1000, 2000];
@@ -279,6 +279,8 @@ struct Runtime {
     pending: VecDeque<Command>,
     stats: StatsAcc,
     conn: Option<Conn>,
+    /// Extended frames (with live plane) seen in this session.
+    saw_live_plane: bool,
     /// Consecutive failures; logged to make a desynchronised link obvious.
     consecutive_failures: u32,
 }
@@ -313,6 +315,7 @@ impl Runtime {
             pending: VecDeque::new(),
             stats: StatsAcc::new(),
             conn: None,
+            saw_live_plane: false,
             consecutive_failures: 0,
         }
     }
@@ -687,17 +690,28 @@ impl Runtime {
 
     /// Validate and publish one `vFrame` payload. Returns a failure reason.
     fn accept_vframe(&mut self, payload: &[u8], length: u32, rtt: Duration) -> Result<(), String> {
-        if payload.len() != VFRAME_PAYLOAD_LEN {
-            return Err(format!(
-                "vFrame payload is {} bytes, expected {VFRAME_PAYLOAD_LEN}",
-                payload.len()
-            ));
-        }
+        // Both the base payload and the extended (live-plane) payload are valid;
+        // `parse_vframe` rejects anything else.
         let parsed = protocol::parse_vframe(payload)
             .map_err(|err| format!("vFrame payload rejected: {err}"))?;
 
+        if parsed.plane.is_some() && !self.saw_live_plane {
+            self.saw_live_plane = true;
+            self.log(
+                Level::Info,
+                "device sent an extended vFrame: live 192x256 f32 temperature plane present"
+                    .to_owned(),
+            );
+        }
+
         self.seq = self.seq.wrapping_add(1);
-        let frame = Arc::new(LiveFrame::decode(parsed.yuv, parsed.key_c, self.seq, rtt));
+        let frame = Arc::new(LiveFrame::decode(
+            parsed.yuv,
+            parsed.key_c,
+            parsed.plane,
+            self.seq,
+            rtt,
+        ));
         self.latest.store(Arc::new(Some(frame)));
 
         self.stats.record(rtt, length);
@@ -953,7 +967,12 @@ mod tests {
                             // Simulate a camera power cycle / AP drop.
                             return Some(());
                         }
-                        fixtures::vframe_message()
+                        // Real firmware appends a live plane to every 11th frame.
+                        if frames.is_multiple_of(11) {
+                            fixtures::vframe_extended_message()
+                        } else {
+                            fixtures::vframe_message()
+                        }
                     }
                 };
                 if socket.write_all(&reply).is_err() {
@@ -1071,6 +1090,46 @@ mod tests {
             after >= before + 3,
             "frames must keep flowing after a no-reply command (seq {before} -> {after})"
         );
+
+        worker.stop();
+    }
+
+    #[test]
+    fn extended_frames_keep_the_stream_alive() {
+        let camera = FakeCamera::spawn(usize::MAX);
+        let worker = start_worker(&camera, 20);
+
+        let deadline = Instant::now() + Duration::from_secs(6);
+        let mut best_seq = 0u64;
+        let mut saw_plane = false;
+        let mut saw_reconnect = false;
+        let mut inits = 0usize;
+
+        while Instant::now() < deadline {
+            for event in worker.try_events() {
+                match event {
+                    Event::State {
+                        state: ConnState::Reconnecting,
+                        ..
+                    } => saw_reconnect = true,
+                    Event::Init(_) => inits += 1,
+                    _ => {}
+                }
+            }
+            if let Some(frame) = worker.latest_frame() {
+                best_seq = best_seq.max(frame.seq);
+                saw_plane |= frame.plane_c.is_some();
+            }
+            if best_seq >= 25 && saw_plane {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        assert!(best_seq >= 25, "stream stalled at seq {best_seq}");
+        assert!(saw_plane, "no extended frame with a live plane");
+        assert!(!saw_reconnect, "extended frames must not force reconnects");
+        assert_eq!(inits, 1, "init should run once, ran {inits} times");
 
         worker.stop();
     }

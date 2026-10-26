@@ -14,6 +14,9 @@ pub struct LiveFrame {
     /// Three key temperatures from the frame trailer. Ordering is believed
     /// max/min/centre but unverified (§5.2, E4).
     pub key_c: [f32; 3],
+    /// Live 192x256 temperature plane (f32 LE) if this reply was an extended
+    /// frame (device sends one every 11th request).
+    pub plane_c: Option<Vec<f32>>,
     pub seq: u64,
     /// Round trip of the request that produced this frame.
     pub rtt: Duration,
@@ -21,13 +24,33 @@ pub struct LiveFrame {
 }
 
 impl LiveFrame {
-    pub fn decode(yuv_plane: &[u8], key_c: [f32; 3], seq: u64, rtt: Duration) -> Self {
+    pub fn decode(
+        yuv_plane: &[u8],
+        key_c: [f32; 3],
+        live_plane: Option<&[u8]>,
+        seq: u64,
+        rtt: Duration,
+    ) -> Self {
         let mut rgba = Vec::with_capacity(RGBA_LEN);
         yuv::yuv420_to_rgba(yuv_plane, &mut rgba);
+        let plane_c = live_plane.and_then(|bytes| {
+            if bytes.len() != crate::protocol::LIVE_PLANE_BYTES {
+                return None;
+            }
+            Some(
+                bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|chunk| f32::from_le_bytes(*chunk))
+                    .collect(),
+            )
+        });
         Self {
             rgba,
             yuv: yuv_plane.to_vec(),
             key_c,
+            plane_c,
             seq,
             rtt,
             received: Instant::now(),

@@ -131,6 +131,8 @@ pub struct CameraApp {
 
     capture: Option<Arc<Capture>>,
     capture_stats: Option<TempStats>,
+    live_plane: Option<Arc<Vec<f32>>>,
+    live_plane_stats: Option<TempStats>,
     capture_pending: bool,
     capture_pending_since: Option<Instant>,
     sample: Option<Sample>,
@@ -188,6 +190,8 @@ impl CameraApp {
             stats: NetStats::default(),
             capture: None,
             capture_stats: None,
+            live_plane: None,
+            live_plane_stats: None,
             capture_pending: false,
             capture_pending_since: None,
             sample: None,
@@ -348,6 +352,10 @@ impl CameraApp {
                 self.upload_texture(ctx, &frame, nearest);
                 if frame.key_c.iter().any(|value| value.is_finite()) {
                     self.last_keys = Some(frame.key_c);
+                }
+                if let Some(plane) = &frame.plane_c {
+                    self.live_plane_stats = capture::plane_stats(plane);
+                    self.live_plane = Some(Arc::new(plane.clone()));
                 }
                 self.last_frame = Some(frame.clone());
                 self.confirm_palette_if_due(&frame);
@@ -810,9 +818,51 @@ impl CameraApp {
     fn measurement_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Measurement");
         let Some(capture) = self.capture.clone() else {
+            if let Some(stats) = self.live_plane_stats {
+                row(
+                    ui,
+                    "source",
+                    "live vFrame plane (192×256, every 11th frame)",
+                );
+                row(
+                    ui,
+                    "range",
+                    &format!("{:.2} … {:.2} °C", stats.min, stats.max),
+                );
+                row(
+                    ui,
+                    "mean / σ",
+                    &format!("{:.2} / {:.2} °C", stats.mean, stats.std_dev),
+                );
+                row(ui, "mapping", "display / 1.25, no flip");
+                match self.sample {
+                    Some(sample) => {
+                        row(ui, "sample", &format!("{:.2} °C", sample.temperature_c));
+                        row(
+                            ui,
+                            "coords",
+                            &format!(
+                                "display ({:.1}, {:.1}) → plane ({}, {})",
+                                sample.display[0],
+                                sample.display[1],
+                                sample.plane[0],
+                                sample.plane[1]
+                            ),
+                        );
+                    }
+                    None => {
+                        ui.small("Click the image to sample the live temperature plane.");
+                    }
+                }
+                ui.small(
+                    "The camera appends this plane to every 11th vFrame; PhotoCap gives \
+                     a full-resolution capture and matching JPEGs.",
+                );
+                return;
+            }
             ui.weak(
-                "No PhotoCap yet. PhotoCap is the only per-pixel temperature source \
-                 (192×256 f32 plane, ~3.3 s, writes a file on the camera).",
+                "No temperature plane yet. The device appends one to every 11th vFrame; \
+                 PhotoCap gives a full-resolution capture (~3.3 s, writes a file).",
             );
             return;
         };
@@ -1195,8 +1245,9 @@ impl CameraApp {
         let size = base * (scale_px / ppp);
 
         let capture = self.capture.clone();
+        let has_live_plane = self.live_plane.is_some();
         let sample = self.sample;
-        let mut clicked_sample: Option<Sample> = None;
+        let mut clicked_display: Option<[f32; 2]> = None;
 
         egui::ScrollArea::both()
             .auto_shrink([false, false])
@@ -1211,24 +1262,14 @@ impl CameraApp {
 
                     if response.clicked()
                         && rect.width() > 0.0
-                        && let Some(capture) = capture.as_ref()
+                        && (capture.is_some() || has_live_plane)
                         && let Some(pos) = response.interact_pointer_pos()
                     {
                         let relative = (pos - rect.min) / rect.size();
-                        let display = [
+                        clicked_display = Some([
                             relative.x.clamp(0.0, 1.0) * FRAME_W as f32,
                             relative.y.clamp(0.0, 1.0) * FRAME_H as f32,
-                        ];
-                        if let Some(temperature_c) =
-                            capture.temperature_at_display(display[0], display[1])
-                            && let Some((px, py)) = capture::plane_coords(display[0], display[1])
-                        {
-                            clicked_sample = Some(Sample {
-                                display,
-                                plane: [px, py],
-                                temperature_c,
-                            });
-                        }
+                        ]);
                     }
 
                     if let Some(sample) = sample {
@@ -1259,15 +1300,30 @@ impl CameraApp {
                 });
             });
 
-        if let Some(sample) = clicked_sample {
-            self.sample = Some(sample);
+        if let Some(display) = clicked_display
+            && let Some((px, py)) = capture::plane_coords(display[0], display[1])
+        {
+            let temperature_c = if let Some(capture) = self.capture.as_ref() {
+                capture.temperature_at_display(display[0], display[1])
+            } else {
+                self.live_plane
+                    .as_deref()
+                    .and_then(|plane| capture::sample_plane(plane, display[0], display[1]))
+            };
+            if let Some(temperature_c) = temperature_c {
+                self.sample = Some(Sample {
+                    display,
+                    plane: [px, py],
+                    temperature_c,
+                });
+            }
         }
 
         if let Some(frame) = &self.last_frame {
-            let hint = if self.capture.is_some() {
+            let hint = if self.capture.is_some() || self.live_plane_stats.is_some() {
                 " · click to sample"
             } else {
-                " · PhotoCap adds a per-pixel temperature plane"
+                " · waiting for a temperature plane"
             };
             ui.horizontal(|ui| {
                 ui.small(format!(
@@ -1418,6 +1474,7 @@ mod tests {
         let frame = LiveFrame::decode(
             &crate::fixtures::yuv_frame(),
             crate::fixtures::SAMPLE_KEY_C,
+            None,
             7,
             Duration::from_millis(42),
         );
@@ -1441,6 +1498,7 @@ mod tests {
         let mut frame = LiveFrame::decode(
             &crate::fixtures::yuv_frame(),
             [f32::NAN; 3],
+            None,
             1,
             Duration::ZERO,
         );

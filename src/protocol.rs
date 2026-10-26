@@ -252,6 +252,13 @@ pub const YUV_CHROMA_LEN: usize = (FRAME_W / 2) * (FRAME_H / 2); // 19 200
 pub const YUV_LEN: usize = YUV_Y_LEN + 2 * YUV_CHROMA_LEN; // 115 200
 pub const KEY_TEMP_LEN: usize = 12;
 pub const VFRAME_PAYLOAD_LEN: usize = YUV_LEN + KEY_TEMP_LEN; // 115 212
+
+/// Live temperature plane appended by the device on every 11th `vFrame`
+/// (observed on firmware 1.1.9): f32 LE, 192x256, 196 608 bytes.
+pub const LIVE_PLANE_W: usize = 192;
+pub const LIVE_PLANE_H: usize = 256;
+pub const LIVE_PLANE_SAMPLES: usize = LIVE_PLANE_W * LIVE_PLANE_H; // 49 152
+pub const LIVE_PLANE_BYTES: usize = LIVE_PLANE_SAMPLES * 4; // 196 608
 pub const INIT_PAYLOAD_LEN: usize = 148;
 pub const INIT_MESSAGE_LEN: u32 = 160;
 pub const RGBA_LEN: usize = FRAME_W * FRAME_H * 4;
@@ -639,23 +646,31 @@ pub struct VFrame<'a> {
     /// Big-endian `f32` triple. Not max/min/centre of the measurement plane and
     /// ordering unknown (§5.2, E4); display as unlabelled readings.
     pub key_c: [f32; 3],
+    /// Optional live temperature plane (f32 LE, 192x256) appended on every 11th
+    /// reply by the device. Lays out after the key temperatures.
+    pub plane: Option<&'a [u8]>,
 }
 
 pub fn parse_vframe(payload: &[u8]) -> Result<VFrame<'_>> {
-    if payload.len() != VFRAME_PAYLOAD_LEN {
-        return Err(ProtoError::BadPayloadLen {
-            what: "vFrame",
-            got: payload.len(),
-            want: VFRAME_PAYLOAD_LEN,
-        });
-    }
-    let (yuv, key) = payload.split_at(YUV_LEN);
+    let plane_len = payload.len().checked_sub(VFRAME_PAYLOAD_LEN);
+    let plane = match plane_len {
+        Some(0) => None,
+        Some(LIVE_PLANE_BYTES) => Some(&payload[VFRAME_PAYLOAD_LEN..]),
+        _ => {
+            return Err(ProtoError::BadPayloadLen {
+                what: "vFrame (115212 or 311820)",
+                got: payload.len(),
+                want: VFRAME_PAYLOAD_LEN,
+            });
+        }
+    };
+    let (yuv, key) = payload[..VFRAME_PAYLOAD_LEN].split_at(YUV_LEN);
     let key_c = [
         f32::from_be_bytes(key[0..4].try_into().expect("bounds checked")),
         f32::from_be_bytes(key[4..8].try_into().expect("bounds checked")),
         f32::from_be_bytes(key[8..12].try_into().expect("bounds checked")),
     ];
-    Ok(VFrame { yuv, key_c })
+    Ok(VFrame { yuv, key_c, plane })
 }
 
 // ---------------------------------------------------------------------------
@@ -738,6 +753,22 @@ mod tests {
         );
         // The raw bytes really are big endian.
         assert_eq!(&msg.payload[YUV_LEN..], &fixtures::SAMPLE_KEY_BYTES);
+    }
+
+    #[test]
+    fn parses_extended_vframe_with_live_plane() {
+        let bytes = fixtures::vframe_extended_message();
+        assert_eq!(bytes.len(), 311_835);
+        let mut cur = Cursor::new(&bytes);
+        let msg = read_message(&mut cur, Some(TOKEN_VFRAME)).expect("parse extended");
+        assert_eq!(msg.payload.len(), VFRAME_PAYLOAD_LEN + LIVE_PLANE_BYTES);
+
+        let frame = parse_vframe(&msg.payload).expect("extended payload");
+        let plane = frame.plane.expect("live plane present");
+        assert_eq!(plane.len(), LIVE_PLANE_BYTES);
+        assert_eq!(frame.key_c, fixtures::SAMPLE_KEY_C);
+        assert_eq!(plane.len() / 4, LIVE_PLANE_SAMPLES);
+        assert_eq!(f32::from_le_bytes(plane[0..4].try_into().unwrap()), 31.0);
     }
 
     #[test]
