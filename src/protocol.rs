@@ -27,6 +27,8 @@ pub const CMD_PHOTOCAP: &str = "UTi_cmdsys:PhotoCap";
 pub const CMD_COLOR_CHANGE: &str = "UTi_cmdsys:colorChange";
 /// Idle keep-alive (§5.3). No reply, no payload; safe fire-and-forget.
 pub const CMD_HEARTBACK: &str = "UTi_cmdsys:HeartBack";
+/// Manual flat-field correction / shutter (§5.5); only while idle.
+pub const CMD_SHUTTER: &str = "UTi_cmdsys:Shutter";
 
 /// Reply token for the init exchange [V].
 pub const TOKEN_INIT: &str = "{init}";
@@ -125,34 +127,54 @@ pub const PALETTE_SIGNATURES: [(f32, f32, f32, f32); 8] = [
     (85.0, 132.0, 77.0, 96.0),
 ];
 
-/// The three unit command pairs verified on the device (§3.2). The device
-/// accepts only well-formed pairs; malformed arguments kill the daemon.
+/// Unit commands verified on the device (§3.2). The unit byte is a bit field:
+/// bit 1 selects Celsius/Kelvin, bit 2 is an independent secondary flag.
+/// Malformed arguments can kill the daemon, so only these pairs are exposed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnitCommand {
-    /// `measUnit+1+0`: unit byte 0, Celsius (default).
+    /// `measUnit+0+0`: clear bit 1 -> Celsius, bit 2 unchanged.
     Celsius,
-    /// `measUnit+1+1`: unit byte 4, scale unresolved; numbers stay Celsius-valued.
-    Unit4,
-    /// `measUnit+0+1`: unit byte 6, Kelvin.
+    /// `measUnit+0+1`: set bit 1 -> Kelvin, bit 2 unchanged.
     Kelvin,
+    /// `measUnit+1+0`: clear bit 2, temperature unchanged.
+    Flag2Clear,
+    /// `measUnit+1+1`: set bit 2, temperature unchanged.
+    Flag2Set,
 }
 
 impl UnitCommand {
-    pub const ALL: [Self; 3] = [Self::Celsius, Self::Unit4, Self::Kelvin];
+    pub const ALL: [Self; 4] = [
+        Self::Celsius,
+        Self::Kelvin,
+        Self::Flag2Clear,
+        Self::Flag2Set,
+    ];
 
     pub fn wire(self) -> &'static str {
         match self {
-            Self::Celsius => "UTi_cmdsys:measUnit+1+0",
-            Self::Unit4 => "UTi_cmdsys:measUnit+1+1",
+            Self::Celsius => "UTi_cmdsys:measUnit+0+0",
             Self::Kelvin => "UTi_cmdsys:measUnit+0+1",
+            Self::Flag2Clear => "UTi_cmdsys:measUnit+1+0",
+            Self::Flag2Set => "UTi_cmdsys:measUnit+1+1",
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Celsius => "Celsius (+1+0)",
-            Self::Unit4 => "unit 4 (+1+1)",
+            Self::Celsius => "Celsius (+0+0)",
             Self::Kelvin => "Kelvin (+0+1)",
+            Self::Flag2Clear => "flag 2 off (+1+0)",
+            Self::Flag2Set => "flag 2 on (+1+1)",
+        }
+    }
+
+    /// Whether a reported unit byte satisfies this command's field.
+    pub fn matches_byte(self, unit: u32) -> bool {
+        match self {
+            Self::Celsius => unit & 0x2 == 0,
+            Self::Kelvin => unit & 0x2 != 0,
+            Self::Flag2Clear => unit & 0x4 == 0,
+            Self::Flag2Set => unit & 0x4 != 0,
         }
     }
 }
@@ -164,6 +186,7 @@ pub enum Command {
     VFrame,
     PhotoCap,
     HeartBack,
+    Shutter,
     ColorChange(Palette),
     MeasureUnit(UnitCommand),
 }
@@ -177,6 +200,7 @@ impl Command {
             Self::VFrame => CMD_VFRAME.to_owned(),
             Self::PhotoCap => CMD_PHOTOCAP.to_owned(),
             Self::HeartBack => CMD_HEARTBACK.to_owned(),
+            Self::Shutter => CMD_SHUTTER.to_owned(),
             Self::ColorChange(palette) => {
                 format!("{CMD_COLOR_CHANGE}+{}", palette.index())
             }
@@ -195,7 +219,7 @@ impl Command {
             Self::Init => Some(TOKEN_INIT),
             Self::VFrame => Some(TOKEN_VFRAME),
             Self::PhotoCap => Some(TOKEN_PHOTOCAP),
-            Self::HeartBack | Self::ColorChange(_) | Self::MeasureUnit(_) => None,
+            Self::HeartBack | Self::Shutter | Self::ColorChange(_) | Self::MeasureUnit(_) => None,
         }
     }
 
@@ -210,6 +234,7 @@ impl Command {
             Self::VFrame => "vFrame".to_owned(),
             Self::PhotoCap => "PhotoCap".to_owned(),
             Self::HeartBack => "HeartBack".to_owned(),
+            Self::Shutter => "Shutter".to_owned(),
             Self::ColorChange(palette) => {
                 format!(
                     "colorChange+{} ({})",
@@ -228,6 +253,22 @@ impl Command {
 /// This encoder is unit-tested but intentionally unreachable from the UI: the
 /// meaning of the rectangle values has not been verified on hardware, so sending
 /// it would violate the typed-whitelist rule.
+#[cfg(test)]
+pub fn encode_scale_update(flag: i32, maximum: f32, minimum: f32) -> Vec<u8> {
+    const COMMAND: &str = "UTi_cmdsys:scaleUpdata";
+    const SUFFIX: &str = "/n/a";
+    let mut out = Vec::with_capacity(42);
+    out.extend_from_slice(COMMAND.as_bytes());
+    let total = (out.len() + 4 + 4 + 4 + 4 + SUFFIX.len()) as u32;
+    out.extend_from_slice(&total.to_be_bytes());
+    out.extend_from_slice(&flag.to_le_bytes());
+    out.extend_from_slice(&maximum.to_be_bytes());
+    out.extend_from_slice(&minimum.to_be_bytes());
+    out.extend_from_slice(SUFFIX.as_bytes());
+    debug_assert_eq!(out.len(), 42);
+    out
+}
+
 #[cfg(test)]
 pub fn encode_pip_rect_move([x, y, w, h]: [u16; 4]) -> Vec<u8> {
     const COMMAND: &str = "UTi_cmdsys:pipRectMove";
@@ -466,7 +507,7 @@ pub struct InitReply {
     pub pip_rect: [i32; 4],
     pub distance_m: f32,
     pub fusion_level: f32,
-    /// 24-byte colour-scale block; semantics unknown [U].
+    /// 24-byte colour-scale block: palette, mode, auto/manual bounds (§4).
     pub color_scale: [u8; 24],
     pub emissivity: f32,
     pub ambient_c: f32,
@@ -491,6 +532,17 @@ pub struct InitReply {
     /// NUL-padded ASCII strings: "1.0", "T2.0", "1.1.9" [V].
     pub versions: [String; 3],
     pub raw: Vec<u8>,
+}
+
+/// Decoded colour-scale block from `init` (§4).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColorScale {
+    pub palette: u32,
+    pub mode: u32,
+    pub auto_upper_c: f32,
+    pub auto_lower_c: f32,
+    pub manual_upper_c: f32,
+    pub manual_lower_c: f32,
 }
 
 fn u32_at(b: &[u8], off: usize) -> u32 {
@@ -611,34 +663,65 @@ impl InitReply {
         Ok(reply)
     }
 
-    /// Value of the 24-byte colour-scale block decoded as two f32 LE at +8/+12.
-    /// Semantics are unknown [U]; the UI labels them as raw values.
+    /// Automatic upper/lower bounds from the colour-scale block.
     pub fn color_scale_floats(&self) -> (f32, f32) {
         (f32_at(&self.color_scale, 8), f32_at(&self.color_scale, 12))
     }
 
-    /// Unit byte at payload offset 88: 0 = °C and 6 = Kelvin are confirmed
-    /// (§3.2); 4 appears after `measUnit+1+1` but its scale is unresolved.
-    /// Byte 2 is the documented collision state after a mixed `measUnit`
-    /// sequence; the raw byte is always shown alongside this label.
-    pub fn unit_label(&self) -> &'static str {
-        match self.unit {
-            0 => "°C",
-            6 => "K",
-            4 => "unit 4 [U]",
-            1 => "°F (presumed) [I]",
-            2 => "byte 2: state collision [U]",
-            _ => "unknown unit",
+    /// Decode the colour-scale block: palette index, scale mode, and the
+    /// automatic/manual bounds (§4). All fields are little endian.
+    pub fn color_scale_fields(&self) -> ColorScale {
+        ColorScale {
+            palette: u32_at(&self.color_scale, 0),
+            mode: u32_at(&self.color_scale, 4),
+            auto_upper_c: f32_at(&self.color_scale, 8),
+            auto_lower_c: f32_at(&self.color_scale, 12),
+            manual_upper_c: f32_at(&self.color_scale, 16),
+            manual_lower_c: f32_at(&self.color_scale, 20),
         }
     }
 
-    /// Symbol to format a temperature with, or `None` when the scale cannot be
-    /// trusted (unresolved unit 4 and unknown values).
+    /// Unit byte at payload offset 88 is a bit field (§3.2): bit 1 is the
+    /// temperature unit (clear Celsius, set Kelvin); bit 2 is an independent
+    /// secondary flag. Unknown high bits make the label untrusted.
+    pub fn is_kelvin(&self) -> bool {
+        self.unit & 0x2 != 0
+    }
+
+    pub fn secondary_flag(&self) -> bool {
+        self.unit & 0x4 != 0
+    }
+
+    pub fn unit_label(&self) -> &'static str {
+        if self.unit & !0x6 != 0 {
+            return "unknown unit";
+        }
+        match (self.is_kelvin(), self.secondary_flag()) {
+            (false, false) => "°C",
+            (true, false) => "K",
+            (false, true) => "°C + flag 2 [U]",
+            (true, true) => "K + flag 2 [U]",
+        }
+    }
+
+    /// Symbol for a temperature after converting the wire value. Key
+    /// temperatures in `vFrame` are always Celsius (§3.2).
     pub fn unit_symbol(&self) -> Option<&'static str> {
-        match self.unit {
-            0 => Some("°C"),
-            6 => Some("K"),
-            _ => None,
+        if self.unit & !0x6 != 0 {
+            None
+        } else if self.is_kelvin() {
+            Some("K")
+        } else {
+            Some("°C")
+        }
+    }
+
+    /// Convert a wire Celsius value to the unit selected by bit 1.
+    pub fn display_temperature_c(&self, celsius: f32) -> f32 {
+        if self.is_kelvin() {
+            celsius + 273.15
+        } else {
+            celsius
         }
     }
 }
@@ -732,6 +815,51 @@ mod tests {
         assert_eq!(replied.versions[1], "T2.0");
         assert_eq!(replied.versions[2], "1.1.9");
         assert_eq!(replied.unit_label(), "°C");
+    }
+
+    #[test]
+    fn colour_scale_block_decodes_documented_fields() {
+        let reply = fixtures::init_reply();
+        let scale = reply.color_scale_fields();
+        assert_eq!(scale.palette, 3);
+        assert_eq!(scale.mode, 0);
+        assert!((scale.auto_upper_c - 33.45).abs() < 1e-4);
+        assert!((scale.auto_lower_c - 30.10).abs() < 1e-4);
+        assert!((scale.manual_upper_c - 0.94).abs() < 1e-4);
+        assert!(scale.manual_lower_c.abs() < 1e-4);
+    }
+
+    #[test]
+    fn unit_byte_is_a_bit_field() {
+        let mut reply = fixtures::init_reply();
+        for (byte, label, kelvin, flag) in [
+            (0, "°C", false, false),
+            (2, "K", true, false),
+            (4, "°C + flag 2 [U]", false, true),
+            (6, "K + flag 2 [U]", true, true),
+        ] {
+            reply.unit = byte;
+            assert_eq!(reply.unit_label(), label, "byte {byte}");
+            assert_eq!(reply.is_kelvin(), kelvin, "byte {byte}");
+            assert_eq!(reply.secondary_flag(), flag, "byte {byte}");
+        }
+        assert_eq!(reply.unit_symbol(), Some("K"));
+        assert!((reply.display_temperature_c(25.0) - 298.15).abs() < 1e-4);
+        reply.unit = 1;
+        assert_eq!(reply.unit_label(), "unknown unit");
+        assert_eq!(reply.unit_symbol(), None);
+    }
+
+    #[test]
+    fn unit_commands_match_their_field() {
+        assert!(UnitCommand::Celsius.matches_byte(0));
+        assert!(UnitCommand::Celsius.matches_byte(4));
+        assert!(!UnitCommand::Celsius.matches_byte(2));
+        assert!(UnitCommand::Kelvin.matches_byte(2));
+        assert!(UnitCommand::Kelvin.matches_byte(6));
+        assert!(UnitCommand::Flag2Clear.matches_byte(0));
+        assert!(!UnitCommand::Flag2Clear.matches_byte(4));
+        assert!(UnitCommand::Flag2Set.matches_byte(4));
     }
 
     #[test]
@@ -867,6 +995,7 @@ mod tests {
         assert_eq!(Command::VFrame.wire(), "UTi_cmdsys:vFrame");
         assert_eq!(Command::PhotoCap.wire(), "UTi_cmdsys:PhotoCap");
         assert_eq!(Command::HeartBack.wire(), "UTi_cmdsys:HeartBack");
+        assert_eq!(Command::Shutter.wire(), "UTi_cmdsys:Shutter");
 
         for (index, palette) in Palette::ALL.into_iter().enumerate() {
             assert_eq!(
@@ -877,15 +1006,19 @@ mod tests {
 
         assert_eq!(
             Command::MeasureUnit(UnitCommand::Celsius).wire(),
-            "UTi_cmdsys:measUnit+1+0"
-        );
-        assert_eq!(
-            Command::MeasureUnit(UnitCommand::Unit4).wire(),
-            "UTi_cmdsys:measUnit+1+1"
+            "UTi_cmdsys:measUnit+0+0"
         );
         assert_eq!(
             Command::MeasureUnit(UnitCommand::Kelvin).wire(),
             "UTi_cmdsys:measUnit+0+1"
+        );
+        assert_eq!(
+            Command::MeasureUnit(UnitCommand::Flag2Clear).wire(),
+            "UTi_cmdsys:measUnit+1+0"
+        );
+        assert_eq!(
+            Command::MeasureUnit(UnitCommand::Flag2Set).wire(),
+            "UTi_cmdsys:measUnit+1+1"
         );
     }
 
@@ -895,7 +1028,9 @@ mod tests {
         assert!(Command::VFrame.expects_reply());
         assert!(Command::PhotoCap.expects_reply());
         assert!(!Command::HeartBack.expects_reply());
+        assert!(!Command::Shutter.expects_reply());
         assert_eq!(Command::HeartBack.expected_token(), None);
+        assert_eq!(Command::Shutter.expected_token(), None);
         assert!(!Command::ColorChange(Palette::P3).expects_reply());
         assert!(!Command::MeasureUnit(UnitCommand::Celsius).expects_reply());
         assert!(Command::PhotoCap.is_slow());
@@ -909,6 +1044,18 @@ mod tests {
         assert!(Palette::from_index(7).is_some());
         assert!(Palette::from_index(8).is_none());
         assert!(Palette::from_index(255).is_none());
+    }
+
+    #[test]
+    fn scale_update_frame_is_exact() {
+        let bytes = encode_scale_update(1, 33.45, 0.0);
+        assert_eq!(bytes.len(), 42);
+        assert_eq!(&bytes[..22], b"UTi_cmdsys:scaleUpdata");
+        assert_eq!(u32::from_be_bytes(bytes[22..26].try_into().unwrap()), 42);
+        assert_eq!(i32::from_le_bytes(bytes[26..30].try_into().unwrap()), 1);
+        assert_eq!(f32::from_be_bytes(bytes[30..34].try_into().unwrap()), 33.45);
+        assert_eq!(f32::from_be_bytes(bytes[34..38].try_into().unwrap()), 0.0);
+        assert_eq!(&bytes[38..], b"/n/a");
     }
 
     #[test]

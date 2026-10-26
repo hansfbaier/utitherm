@@ -42,8 +42,13 @@ pub fn init_payload() -> Vec<u8> {
     put_f32(&mut p, 24, 0.25); // distance, m
     put_f32(&mut p, 28, 0.5); // fusion level
 
-    // Colour-scale block, observed bytes at +8/+12; semantics unknown [U].
-    p[32 + 8..32 + 16].copy_from_slice(&[0x6e, 0x56, 0x4b, 0x42, 0x4d, 0xf8, 0xfe, 0x41]);
+    // Colour-scale block: palette, mode, automatic and manual bounds (§4).
+    put_u32(&mut p, 32, 3); // palette index
+    put_u32(&mut p, 36, 0); // automatic mode
+    put_f32(&mut p, 40, 33.45); // automatic upper bound
+    put_f32(&mut p, 44, 30.10); // automatic lower bound
+    put_f32(&mut p, 48, 0.94); // manual upper bound
+    put_f32(&mut p, 52, 0.0); // manual lower bound
 
     put_f32(&mut p, 56, 0.95); // emissivity
     put_f32(&mut p, 60, 25.0); // ambient / reflected
