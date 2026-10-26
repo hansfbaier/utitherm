@@ -944,28 +944,37 @@ impl CameraApp {
         let (scale_a, scale_b) = init.color_scale_floats();
         let palette = self.palette_status();
 
+        let symbol = init.unit_symbol().unwrap_or("?");
         row(ui, "versions", &init.versions.join(" / "));
         row(ui, "emissivity", &format!("{:.2}", init.emissivity));
         row(ui, "distance", &format!("{:.2} m", init.distance_m));
         row(
             ui,
             "ambient / reflected",
-            &format!("{:.1} °C", init.ambient_c),
+            &format!("{:.1} {symbol}", init.ambient_c),
         );
         row(
             ui,
             "second ambient [U]",
-            &format!("{:.1} °C", init.ambient2_c),
+            &format!("{:.1} {symbol}", init.ambient2_c),
         );
         row(ui, "humidity", &format!("{} %RH", init.humidity_pct));
-        row(ui, "ambient int [I]", &format!("{} °C", init.ambient_int_c));
-        row(ui, "unit", init.unit_label());
+        row(
+            ui,
+            "ambient int [I]",
+            &format!("{} {symbol}", init.ambient_int_c),
+        );
+        row(
+            ui,
+            "unit",
+            &format!("{} (byte {})", init.unit_label(), init.unit),
+        );
         row(ui, "palette", &palette);
         row(
             ui,
             "alarm",
             &format!(
-                "{} · Δ {:.1} K · {:.1} °C",
+                "{} · Δ {:.1} K · {:.1} {symbol}",
                 if init.alarm_enable != 0 { "on" } else { "off" },
                 init.alarm_high_delta_k,
                 init.alarm_value_c
