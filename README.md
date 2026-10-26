@@ -41,9 +41,9 @@ Space toggles connecting when a text field does not have focus.
   in physical pixels so the burned-in OSD stays crisp at fractional DPI;
   nearest-neighbour filtering at integer scale, linear for fractional fit.
   Aspect ratio 3:4.
-- Shows the three per-frame header temperatures as unlabelled readings with the
-  device unit. They are **not** max/min/centre of the measurement plane
-  (spec §5.2, E4).
+- Shows the three per-frame header temperatures as unlabelled readings,
+  converted from wire Celsius to the unit selected by bit 1 of the `init` byte.
+  They are **not** max/min/centre of the measurement plane (spec §5.2, E4).
 - Accepts both live-frame payloads: the base 115 212-byte reply and the extended
   311 820-byte reply carrying a 192×256 f32 temperature plane. This firmware
   appends the plane to every 11th frame (~0.6 s at 20 fps).
@@ -93,8 +93,9 @@ Space toggles connecting when a text field does not have focus.
   touches the planes.
 - Socket timeouts (2 s default), `TCP_NODELAY` and `SO_KEEPALIVE` are set.
   `PhotoCap` temporarily raises the read timeout to 30 s because a capture can
-  take several seconds (spec §6). Captures are serialised; a busy/error reply is
-  surfaced as retryable and the connection is kept.
+  take several seconds (spec §6). Captures are serialised. A 17-byte empty reply
+  is the sticky busy latch: capture is disabled and the live stream is kept; an
+  unexpected reply is surfaced as retryable.
 - When no frame has been requested for 5 s, the worker sends the fire-and-forget
   `HeartBack` keep-alive (spec §5.3).
 - USB import runs on its own worker thread and communicates only by channel; a
@@ -166,8 +167,8 @@ Global options: `--ip <addr|auto>`, `--port`, `--config`, `--fps`,
 - JSON output is one object per command, except `watch`, which prints one object
   per frame.
 - `capture` does not write to the camera SD card (verified); expect several
-  seconds. Concurrent captures are rejected by the device and surfaced as
-  retryable, never as a connection failure.
+  seconds. A 17-byte empty `{UTi_Photo}` reply or a timeout means the capture
+  engine is unavailable: restart the camera application, do not retry in place.
 - The camera accepts a single client at a time. Back-to-back CLI invocations may
   need a short gap; the worker retries within `--timeout-ms`.
 - USB import is strictly read-only: mount the volume read-only, never write,
@@ -175,7 +176,8 @@ Global options: `--ip <addr|auto>`, `--port`, `--config`, `--fps`,
   SHA-256 (`<sha>.jpg`, `<sha>_thumb.png`, `usb-index.json`). Auto-discovery uses
   the configured `AUTORUN.INF` marker; override with `--usb-marker`.
 - Only verified commands are reachable: `init`, `vFrame`, `PhotoCap`,
-  `HeartBack`, `colorChange+0..7`, and `measUnit+1+0|+1+1|+0+1`.
+  `HeartBack`, `Shutter`, `colorChange+0..7`, and
+  `measUnit+0+0|+0+1|+1+0|+1+1`.
 
 ## Commands (typed whitelist)
 
@@ -191,13 +193,14 @@ variants are enumerated or range checked.
 | PhotoCap  | `UTi_cmdsys:PhotoCap`                     | yes            |
 | keepalive | `UTi_cmdsys:HeartBack`                    | yes (no reply) |
 | palette   | `UTi_cmdsys:colorChange+0..7`             | yes (no reply) |
-| unit      | `UTi_cmdsys:measUnit+1+0`, `+1+1`, `+0+1` | yes (no reply) |
+| unit      | `UTi_cmdsys:measUnit+0+0`, `+0+1`, `+1+0`, `+1+1` | yes (no reply) |
+| FFC       | `UTi_cmdsys:Shutter`                      | yes (no reply) |
 
-`pipRectMove` is documented as a binary frame (command name + `u32 BE` total
-length 38 + four `u16 LE` values + `"/n/a"`); the encoder is unit-tested but not
-reachable from the UI because the rectangle semantics are unverified. All other
-named commands use arguments that have not been verified, so they are not
-exposed (spec §3 safety rule, acceptance §13.10).
+`pipRectMove` and `scaleUpdata` have typed, byte-exact encoders with unit tests,
+but neither is reachable from the UI: the rectangle semantics are unverified and
+manual scale mode cannot be reached remotely. All other named commands use
+arguments that have not been verified, so they are not exposed (spec §3 safety
+rule, acceptance §13.10).
 
 ## Measurement and PhotoCap
 
@@ -226,15 +229,16 @@ The camera's USB volume contains `DCIM/YYYYMMDDnnnnnE.jpg`. Each file is:
 
 ```text
 JPEG #1 (240x320 with OSD)
-u32 BE len2
-JPEG #2 (480x640, len2 bytes)
-u32 BE len2 (repeated)
+i32 BE len2                 # -1 when the visible image is absent
+JPEG #2 (480x640, len2 bytes; optional)
+u32 BE len2 (repeated, or 0 when absent)
 49 152 x { f32 BE temperature °C, u32 BE aux }   interleaved
 4 063-byte metadata block
 ```
 
 Validation requires both length words to agree and
-`size = len(jpeg1) + 4 + len2 + 4 + 8*49152 + 4063`. Temperature samples must be
+`size = len(jpeg1) + 4 + max(len2, 0) + 4 + 8*49152 + 4063`. Thermal-only
+files store `-1` and `0`, then go straight to the records. Temperature samples must be
 inside a physical band (−40…400 °C). The plane is row-major 192×256 with the
 same 1.25 display mapping as `PhotoCap`. Imports preserve firmware, model,
 emissivity, distance, humidity, ambient and unit from the metadata block.
@@ -280,10 +284,10 @@ big-endian key temperatures, BT.601 conversion against a reference formula,
 exact bytes for every whitelisted command including the binary `pipRectMove`
 frame, `PhotoCap` section parsing and the 192-stride mapping/correlation,
 fixture round-trips, config parsing, replay loading, an end-to-end worker test
-against a fake camera (init, reconnect, no-reply commands, capture and busy
-replies, extended live-plane frames), palette signature matching, capture
+against a fake camera (init, reconnect, no-reply commands, capture and the
+17-byte unavailable reply, extended live-plane frames), palette signature matching, capture
 round-trips, USB container validation/metadata/indexing, import-worker events,
-CLI argument parsing and PNG/YUV export. The suite has 64 tests.
+CLI argument parsing and PNG/YUV export. The suite has 72 tests.
 
 `--make-fixtures <dir>` writes a synthetic fixture set:
 
@@ -303,9 +307,9 @@ measurement plane, so the overlay and mapping can be exercised without hardware
 
 - Requests are sent as the literal command strings: `init` 15 bytes, `vFrame`
   17, `PhotoCap` 19, `HeartBack` 20. The protocol has no request terminator.
-- The `init` colour-scale block decodes to 50.83 and 31.87 from the captured
-  bytes (`4d f8 fe 41`), while the spec table prints 32.00 for the second value.
-  The UI shows the decoded values and marks the block `[U]`.
+- The `init` colour-scale block is decoded as palette index, scale mode, and
+  automatic/manual bounds (`palette`, `mode`, `auto_*`, `manual_*`); the UI
+  marks the mode fields `[I]` where the spec does.
 - Palette confirmation uses the one-scene mean-RGB/saturation references in
   §3.1 as a loose check against a decoded frame including the OSD. It is a
   heuristic, labelled as detected, not measured.
@@ -315,20 +319,26 @@ measurement plane, so the overlay and mapping can be exercised without hardware
   (311 835-byte total reply). The client accepts both base and extended
   payloads; the spec now documents the same observation.
 - `PhotoCap` does not write to the camera SD card. A capture can take 10 s when
-  USB is bound; the read timeout is 30 s and concurrent captures are
-  client-serialised.
+  USB is bound; the read timeout is 30 s. A 17-byte `{UTi_Photo}` reply with no
+  payload is the device's sticky busy latch: capture is disabled until the
+  camera application is restarted. The client never retries it in place, never
+  opens a second connection during a capture, and disables other commands while
+  a capture is pending.
 - `HeartBack` is sent only after 5 s without a frame, in the full wire form
   `UTi_cmdsys:HeartBack`; it has no reply and is fire-and-forget. The `sys:`
   strings are handler names inside the device, not wire text.
 - USB metadata offsets vary slightly between files (firmware at 3980 or 3981 in
   tested samples); the importer accepts both and validates the container size.
+  The visible JPEG is optional: thermal-only files use `len2 = -1` and a zero
+  second word, then the records and metadata.
 - Frame pacing is scheduled from the request start. Scheduling from the reply
   arrival capped throughput at `RTT + interval` (~11 fps); the observed rate is
   now ~18 fps at a 20 fps target.
-- `measUnit+0+1` switched the camera to Kelvin, but `init` first reported the old
-  unit and after `measUnit+1+0` reported unit byte `2` while the OSD stayed in K.
-  The GUI and CLI report the raw byte; a power cycle or camera-menu reset is the
-  safe recovery. Only verified pairs are ever sent.
+- The `init` unit byte is a bit field: bit 1 selects Celsius/Kelvin, bit 2 is an
+  independent flag. `measUnit+0+0` and `+0+1` change temperature; `+1+0` and
+  `+1+1` change the flag. Key temperatures in `vFrame` always arrive in Celsius;
+  the GUI converts them for display from bit 1, while measurement planes are
+  documented as Celsius.
 
 ## Known limits
 
@@ -338,9 +348,12 @@ measurement plane, so the overlay and mapping can be exercised without hardware
   196 608-byte f32 tail. Unknown payload lengths are rejected cleanly. The spec
   permits this scope; RGB888 and u16-tail models are not decoded yet (spec §15.5).
 - Palette signatures are scene-dependent one-scene references, so confirmation
-  is deliberately loose; unit state can remain in the documented byte-2
-  collision after mixed `measUnit` commands. Both are reported as raw/detected
-  values, never silently trusted.
+  is deliberately loose. Unit state is a two-bit field and is shown raw. Both
+  are reported as detected values, never silently trusted.
+- FFC boundary detection is a heuristic based on a simultaneous key-temperature
+  step and stable mean luma; it clears the live measurement plane for two
+  frames. Use the `shutter` command or GUI `FFC` button before a measurement
+  series when a clean epoch matters.
 - Palette cannot be recoloured client-side; the device must change it.
 - OSD cannot be hidden from this client (spec §12 E6); the sampling overlay is
   drawn on top of the image, outside the OSD region only by convention.

@@ -515,6 +515,7 @@
         <a href="#cmd-measure"><span class="n">09</span> measure</a>
         <a href="#cmd-palette"><span class="n">10</span> palette</a>
         <a href="#cmd-unit"><span class="n">11</span> unit</a>
+        <a href="#cmd-shutter"><span class="n">+</span> shutter</a>
         <a href="#cmd-watch"><span class="n">12</span> watch</a>
       </nav>
     </div>
@@ -593,7 +594,7 @@
         </div>
         <div class="quick-card">
           <h3>Change</h3>
-          <p><code>palette</code> · <code>unit</code><br>Verified arguments only; confirmation is explicit.</p>
+          <p><code>palette</code> · <code>unit</code> · <code>shutter</code><br>Verified arguments only; confirmation is explicit.</p>
         </div>
         <div class="quick-card">
           <h3>Capture</h3>
@@ -630,7 +631,7 @@
               Malformed arguments can terminate the device daemon and require a power cycle.
               The CLI exposes only verified commands and fixed argument sets:
               <code>init</code>, <code>vFrame</code>, <code>PhotoCap</code>,
-              <code>colorChange+0..7</code> and three <code>measUnit</code> pairs.
+              <code>colorChange+0..7</code> and four <code>measUnit</code> field pairs.
               There is no free-form command option.
             </p>
           </div>
@@ -859,14 +860,15 @@ uti260b-cli --json frame --png shot.png --plane shot.f32 \
         <div class="cmd-body">
           <p>Runs <code>PhotoCap</code> once and writes every section. This is the
           full-resolution radiometric path; live frames also carry a 192×256 plane, but only on
-          every 11th request. Captures are serialised client-side; the device's busy reply is
-          surfaced as retryable.</p>
+          every 11th request. Captures are serialised client-side.</p>
           <div class="callout warn">
             <div class="ci">!</div>
             <div><strong>No SD-card write.</strong> A network capture does not create a file in
             <code>DCIM/</code>. It takes several seconds (about 10 s when USB is bound), so do not
-            run it in a tight loop. Concurrent captures are rejected by the device; the client
-            serialises them and reports a busy reply as retryable.</div>
+            run it in a tight loop. There is no queue: an in-flight capture is never retried, and a
+            17-byte empty <code>{UTi_Photo}</code> reply disables capture until the camera
+            application is restarted. Do not open a second client or send other commands while a
+            capture is pending; that combination has killed the camera application.</div>
           </div>
           <div class="table-wrap">
             <table>
@@ -1019,18 +1021,20 @@ uti260b-cli --json palette 3 --frames 10</code></pre>
         <div class="cmd-head">
           <span class="method write">WRITE</span>
           <h3>unit</h3>
-          <span class="syn">uti260b-cli unit &lt;celsius|unit4|kelvin&gt;</span>
+          <span class="syn">uti260b-cli unit &lt;celsius|kelvin|flag2-clear|flag2-set&gt;</span>
         </div>
         <div class="cmd-body">
           <p>Sends one verified <code>measUnit</code> pair, waits, then re-reads <code>init</code>
-          and reports the unit byte. Exit is non-zero when the reported byte differs.</p>
+          and checks the relevant bit of the reported byte. Exit is non-zero when the field does
+          not match.</p>
           <div class="table-wrap">
             <table>
               <thead><tr><th>Argument / flag</th><th>Default</th><th>Effect</th></tr></thead>
               <tbody>
-                <tr><td><code>celsius</code></td><td>—</td><td>Send <code>measUnit+1+0</code>; expect unit byte 0.</td></tr>
-                <tr><td><code>unit4</code></td><td>—</td><td>Send <code>measUnit+1+1</code>; expect unit byte 4 (scale unresolved).</td></tr>
-                <tr><td><code>kelvin</code></td><td>—</td><td>Send <code>measUnit+0+1</code>; expect unit byte 6.</td></tr>
+                <tr><td><code>celsius</code></td><td>—</td><td>Send <code>measUnit+0+0</code>; clear bit 1 (Celsius), leave bit 2 alone.</td></tr>
+                <tr><td><code>kelvin</code></td><td>—</td><td>Send <code>measUnit+0+1</code>; set bit 1 (Kelvin), leave bit 2 alone.</td></tr>
+                <tr><td><code>flag2-clear</code></td><td>—</td><td>Send <code>measUnit+1+0</code>; clear the independent secondary flag.</td></tr>
+                <tr><td><code>flag2-set</code></td><td>—</td><td>Send <code>measUnit+1+1</code>; set the independent secondary flag.</td></tr>
                 <tr><td><code>--settle-ms &lt;MS&gt;</code></td><td><code>800</code></td><td>Delay before re-reading init.</td></tr>
                 <tr><td><code>--allow-mismatch</code></td><td>off</td><td>Exit 0 even when init reports another byte.</td></tr>
               </tbody>
@@ -1043,10 +1047,37 @@ uti260b-cli --json unit kelvin --settle-ms 1200</code></pre>
           </div>
           <div class="callout danger">
             <div class="ci">!</div>
-            <div><strong>Tested-firmware caveat.</strong> Switching to Kelvin worked, but returning to
-            Celsius left <code>init</code> reporting unit byte <code>2</code> while the OSD stayed in K.
-            The CLI reports the byte and exits 1 unless <code>--allow-mismatch</code>. Recovery may need a
-            power cycle or the camera menu.</div>
+            <div><strong>Bit-field model.</strong> The unit byte is not an enumeration:
+            bit 1 is Celsius/Kelvin and bit 2 is an independent flag, so bytes 0, 2, 4 and 6 are
+            all valid. Wire key temperatures stay Celsius regardless. The CLI prints the raw byte
+            and checks only the field it requested.</div>
+          </div>
+        </div>
+      </article>
+
+      <!-- shutter -->
+      <article class="cmd" id="cmd-shutter">
+        <div class="cmd-head">
+          <span class="method write">WRITE</span>
+          <h3>shutter</h3>
+          <span class="syn">uti260b-cli shutter</span>
+        </div>
+        <div class="cmd-body">
+          <p>Requests a manual flat-field correction (FFC) with
+          <code>UTi_cmdsys:Shutter</code>. The command has no reply. The device closes the
+          shutter blade, recomputes non-uniformity correction, and every temperature shifts by a
+          small offset afterwards.</p>
+          <div class="callout warn">
+            <div class="ci">!</div>
+            <div><strong>Measurement epoch.</strong> Only compare measurements within one FFC
+            epoch. The GUI detects a simultaneous key-temperature step over a stable scene and
+            clears the live measurement plane for two frames. Run <code>shutter</code> before a
+            measurement series when a clean baseline matters.</div>
+          </div>
+          <div class="code">
+            <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
+<pre><code>uti260b-cli shutter
+uti260b-cli --json shutter</code></pre>
           </div>
         </div>
       </article>
@@ -1107,7 +1138,7 @@ uti260b-cli --json watch | jq -r '[.seq, .key_c[0]] | @csv' &gt; keys.csv</code>
   "ambient2": 25.0,
   "humidity_pct": 55,
   "ambient_int": 25,
-  "unit": { "byte": 0, "label": "°C" },
+  "unit": { "byte": 0, "label": "°C", "kelvin": false, "secondary_flag": false },
   "image_select": 0,
   "fusion_level": 0.5,
   "pip_rect": [60, 80, 120, 160],
@@ -1117,7 +1148,12 @@ uti260b-cli --json watch | jq -r '[.seq, .key_c[0]] | @csv' &gt; keys.csv</code>
   "other_info": [1, 70],
   "laser_px": [160, 229],
   "fuse_xy": [0, 0, 0],
-  "colour_scale": "0000000000000000..."
+  "colour_scale": {
+    "palette": 3, "mode": 0,
+    "auto_upper_c": 33.45, "auto_lower_c": 30.10,
+    "manual_upper_c": 0.94, "manual_lower_c": 0.0
+  },
+  "colour_scale_raw": "0000000000000000..."
 }</code></pre>
             </div>
           </div>
@@ -1300,7 +1336,7 @@ uti260b-cli --json watch | jq -r '[.seq, .key_c[0]] | @csv' &gt; keys.csv</code>
               <h4>Radiometric container</h4>
               <span class="bytes">~0.6–0.7 MB</span>
             </div>
-            <p>Camera DCIM file: two JPEGs, interleaved f32 temperatures + aux, metadata. Imported read-only and indexed by SHA-256.</p>
+            <p>Camera DCIM file: one or two JPEGs, interleaved f32 temperatures + aux, metadata. Imported read-only and indexed by SHA-256.</p>
             <div class="fmt"><code>import --path</code> · <code>measure --usb-file</code></div>
           </div>
         </div>
@@ -1557,7 +1593,7 @@ uti260b-viewer --verify-capture capture_raw.bin</code></pre>
             <tbody>
               <tr><td>JPEG #1</td><td>baseline JPEG</td><td>240×320 with OSD; thumbnail source</td></tr>
               <tr><td>len2</td><td>u32 BE</td><td>appears before <em>and</em> after JPEG #2; both must match</td></tr>
-              <tr><td>JPEG #2</td><td>baseline JPEG</td><td>480×640, clean image</td></tr>
+              <tr><td>JPEG #2</td><td>baseline JPEG</td><td>480×640, clean image; optional (thermal-only files use <code>len2 = -1</code>)</td></tr>
               <tr><td>records</td><td>f32 BE + u32 BE</td><td>192×256 plane, row-major, interleaved with <code>aux</code></td></tr>
               <tr><td>metadata</td><td>fixed offsets, ASCII/raw</td><td>firmware, model, emissivity, distance, humidity, ambient, unit</td></tr>
             </tbody>
@@ -1565,8 +1601,9 @@ uti260b-viewer --verify-capture capture_raw.bin</code></pre>
         </div>
         <h4>Validation and safety</h4>
         <div class="steps">
-        <div class="step"><p><strong>Structure:</strong> two JPEG SOI/EOI pairs, both length words equal, and
-        <code>size = len(jpeg1) + 4 + len2 + 4 + 8×49152 + 4063</code>.</p></div>
+        <div class="step"><p><strong>Structure:</strong> one or two JPEG SOI/EOI pairs; both length
+        words equal (or the thermal-only <code>-1</code>/<code>0</code> pair), and
+        <code>size = len(jpeg1) + 4 + max(len2, 0) + 4 + 8×49152 + 4063</code>.</p></div>
         <div class="step"><p><strong>Physics:</strong> every temperature must be finite and inside
         −40…400 °C. A planar/misaligned read produces ±1e30 values and is rejected.</p></div>
         <div class="step"><p><strong>Stability:</strong> the worker waits for size and mtime to be
@@ -1819,7 +1856,7 @@ done</code></pre>
               <li>One outstanding request; frames are never queued. <code>watch</code> samples the newest frame, so sequence numbers can skip.</li>
               <li>Target fps is a ceiling. Measured ~18 fps at 20 fps target; the extended-frame cadence is every 11th request.</li>
               <li>After 5 s without a frame the worker sends <code>HeartBack</code> (no reply, no payload).</li>
-              <li><code>PhotoCap</code> is serialised client-side. A busy/error reply is retryable and does not drop the connection.</li>
+              <li><code>PhotoCap</code> is serialised client-side. A 17-byte <code>{UTi_Photo}</code> reply with no payload is the sticky busy latch: capture is disabled until the camera application is restarted. The connection and live stream stay up.</li>
               <li>Palette and OSD are baked into the YUV image; the CLI cannot recolor or hide them.</li>
             </ul>
           </div>
@@ -1849,7 +1886,8 @@ done</code></pre>
               <tr><td><code>UTi_cmdsys:PhotoCap</code></td><td><code>{UTi_Photo}</code>, ~550 KB</td><td><code>capture</code></td></tr>
               <tr><td><code>UTi_cmdsys:HeartBack</code></td><td>none</td><td>idle keep-alive</td></tr>
               <tr><td><code>UTi_cmdsys:colorChange+0..7</code></td><td>none</td><td><code>palette</code></td></tr>
-              <tr><td><code>UTi_cmdsys:measUnit+1+0 / +1+1 / +0+1</code></td><td>none</td><td><code>unit</code></td></tr>
+              <tr><td><code>UTi_cmdsys:measUnit+0+0 / +0+1 / +1+0 / +1+1</code></td><td>none</td><td><code>unit</code></td></tr>
+              <tr><td><code>UTi_cmdsys:Shutter</code></td><td>none</td><td><code>shutter</code></td></tr>
             </tbody>
           </table>
         </div>
@@ -1885,14 +1923,16 @@ done</code></pre>
           <div class="panel">
             <h4 style="margin-top:0">PhotoCap timeout</h4>
             <p class="small muted">The device needs several seconds (10 s with USB bound). Raise
-            <code>--capture-timeout-ms</code>, avoid concurrent captures, and retry on a busy reply.
-            No SD-card write is involved.</p>
+            <code>--capture-timeout-ms</code>. A 17-byte empty reply or a timeout means the capture
+            engine is unavailable; restart the camera application, do not retry in place. No
+            SD-card write is involved.</p>
           </div>
           <div class="panel">
             <h4 style="margin-top:0">Unit mismatch</h4>
-            <p class="small muted">The CLI prints the reported byte. On tested firmware, returning from K can leave
-            byte <code>2</code>; a power cycle or camera-menu reset restores the unit. Use
-            <code>--allow-mismatch</code> only when scripts tolerate it.</p>
+            <p class="small muted">The unit byte is a bit field: bit 1 is Celsius/Kelvin, bit 2 is
+            an independent flag. Byte <code>2</code> is valid Kelvin, not a stuck state. The CLI
+            checks only the requested field; use <code>--allow-mismatch</code> for scripts that
+            tolerate a mismatch.</p>
           </div>
           <div class="panel">
             <h4 style="margin-top:0">Palette not confirmed</h4>
