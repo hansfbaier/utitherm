@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>uti260b-cli — automation guide</title>
-<meta name="description" content="Command-line automation interface for the UNI-T UTi260B+ thermal imager: commands, JSON output, and capture file formats.">
+<title>utitherm-cli — automation guide</title>
+<meta name="description" content="Command-line automation interface for the UNI-T UTi260B+ / UTi_cmdsys thermal imagers: commands, JSON output, and capture file formats.">
 <style>
   :root {
     --bg: #070b12;
@@ -478,9 +478,9 @@
 <div class="progress" aria-hidden="true"><span id="progress"></span></div>
 
 <header class="topbar">
-  <a class="brand" href="#top" aria-label="uti260b-cli documentation">
+  <a class="brand" href="#top" aria-label="utitherm-cli documentation">
     <span class="logo" aria-hidden="true"></span>
-    <span>uti260b-cli <small>automation guide</small></span>
+    <span>utitherm-cli <small>automation guide</small></span>
   </a>
   <span class="pill"><span class="dot" aria-hidden="true"></span>v0.1.0</span>
   <span class="spacer"></span>
@@ -550,10 +550,10 @@
 
       <section class="hero" aria-labelledby="hero-title">
         <div>
-          <div class="kicker">UNI-T UTi260B+ · TCP 9527</div>
+          <div class="kicker">UNI-T UTi260B+ / UTi_cmdsys · TCP 9527</div>
           <h1 id="hero-title">Camera control,<br>scriptable.</h1>
           <p class="lead">
-            <strong>uti260b-cli</strong> exposes the thermal imager to shells, cron jobs and
+            <strong>utitherm-cli</strong> exposes the thermal imager to shells, cron jobs and
             Python. Snapshot frames, pull full-resolution radiometric captures, sample a
             temperature and emit JSON — without opening the GUI.
           </p>
@@ -567,22 +567,22 @@
         <div class="terminal" aria-label="Example terminal session">
           <div class="term-head">
             <span class="lights" aria-hidden="true"><span></span><span></span><span></span></span>
-            <span class="title">bash — uti260b-cli</span>
+            <span class="title">bash — utitherm-cli</span>
           </div>
 <pre><span class="c"># device state, JSON</span>
-<span class="g">$</span> uti260b-cli --json info
+<span class="g">$</span> utitherm-cli --json info
 {<span class="y">"versions"</span>:[<span class="s">"1.0T"</span>,<span class="s">"2.0"</span>,<span class="s">"1.1.9"</span>], ... }
 
 <span class="c"># one live frame + temperature plane</span>
-<span class="g">$</span> uti260b-cli frame --png shot.png \
+<span class="g">$</span> utitherm-cli frame --png shot.png \
       --plane shot.f32 --require-plane
 
 <span class="c"># sample at display (121,161)</span>
-<span class="g">$</span> uti260b-cli --json measure --display 121,161
+<span class="g">$</span> utitherm-cli --json measure --display 121,161
 {<span class="y">"temperature_c"</span>: <span class="m">28.79</span>, <span class="y">"plane"</span>: [<span class="m">96</span>,<span class="m">128</span>], ... }
 
 <span class="c"># full PhotoCap: JPEGs + f32 temperature</span>
-<span class="g">$</span> uti260b-cli capture --dir capture --raw capture/raw.bin
+<span class="g">$</span> utitherm-cli capture --dir capture --raw capture/raw.bin
 </pre>
         </div>
       </section>
@@ -611,9 +611,10 @@
           </div>
         </div>
         <p>
-          The camera streams palette-mapped YUV frames over a single plaintext TCP
-          connection. Every command and reply is a small framed message. This CLI wraps that
-          protocol in one process per invocation and prints either readable text or JSON.
+          The camera streams palette-mapped I420 or RGB888 frames over a single plaintext TCP
+          connection. Every command and reply is a small framed message. The CLI selects the
+          geometry and pixel format from the live payload length, and refines the raw grid from
+          <code>PhotoCap</code>. One process per invocation; readable text or JSON output.
         </p>
         <div class="grid-2">
           <div class="panel">
@@ -638,10 +639,12 @@
         </div>
         <div class="callout">
           <div class="ci">i</div>
-          <div><strong>Live measurement is possible.</strong> This firmware appends a 192×256
-          f32 temperature plane to every 11th <code>vFrame</code>. The CLI accepts both the
-          base and extended payloads automatically; use <code>--require-plane</code> when a
-          script needs a plane on the first frame.</div>
+          <div><strong>Family support.</strong> Length arithmetic covers the Tier 1/2 geometries
+          in <code>UTi-family-protocol-spec.md</code>: I420 or RGB888, optional u16/f32 tails,
+          and display/raw sizes from 120×160 to 640×480. Only the UTi260B+ is hardware-verified;
+          confirm other models before relying on measurements. On the reference firmware a
+          192×256 f32 plane arrives every 11th <code>vFrame</code>; use
+          <code>--require-plane</code> when a script needs one.</div>
         </div>
       </section>
 
@@ -659,15 +662,15 @@
 cargo build --release
 
 <span class="cm"># CLI binary</span>
-./target/release/uti260b-cli --help
+./target/release/utitherm-cli --help
 
 <span class="cm"># install on PATH</span>
-install -m 0755 target/release/uti260b-cli ~/.local/bin/</code></pre>
+install -m 0755 target/release/utitherm-cli ~/.local/bin/</code></pre>
         </div>
         <p class="small muted">
-          The GUI binary is <code>uti260b-viewer</code>. Both binaries share the same
+          The GUI binary is <code>utitherm-viewer</code>. Both binaries share the same
           protocol, worker and capture decoder. Config is read from
-          <code>./uti260b.toml</code> or <code>~/.config/uti260b/config.toml</code>.
+          <code>./utitherm.toml</code> or <code>~/.config/utitherm/config.toml</code>.
         </p>
         <div class="callout ok">
           <div class="ci">✓</div>
@@ -686,10 +689,10 @@ install -m 0755 target/release/uti260b-cli ~/.local/bin/</code></pre>
           </div>
         </div>
         <div class="steps">
-          <div class="step"><p><strong>Check the link.</strong> <code>uti260b-cli info</code> prints versions, unit and measurement settings.</p></div>
-          <div class="step"><p><strong>Grab a frame.</strong> <code>uti260b-cli frame --png shot.png --plane shot.f32 --require-plane</code>.</p></div>
-          <div class="step"><p><strong>Measure.</strong> <code>uti260b-cli --json measure --display 121,161</code> → JSON with °C.</p></div>
-          <div class="step"><p><strong>Capture full resolution.</strong> <code>uti260b-cli capture --dir capture</code> → five sections plus optional raw reply.</p></div>
+          <div class="step"><p><strong>Check the link.</strong> <code>utitherm-cli info</code> prints versions, unit and measurement settings.</p></div>
+          <div class="step"><p><strong>Grab a frame.</strong> <code>utitherm-cli frame --png shot.png --plane shot.f32 --require-plane</code>.</p></div>
+          <div class="step"><p><strong>Measure.</strong> <code>utitherm-cli --json measure --display 121,161</code> → JSON with °C.</p></div>
+          <div class="step"><p><strong>Capture full resolution.</strong> <code>utitherm-cli capture --dir capture</code> → five sections plus optional raw reply.</p></div>
         </div>
         <div class="code">
           <div class="code-head"><span class="lang">bash — end-to-end</span><button class="copy" type="button">Copy</button></div>
@@ -698,17 +701,17 @@ CAM=192.168.27.10
 OUT=./thermal-$(date +%Y%m%d-%H%M%S)
 mkdir -p "$OUT"
 
-uti260b-cli --ip "$CAM" --json info &gt; "$OUT/info.json"
-uti260b-cli --ip "$CAM" frame \
+utitherm-cli --ip "$CAM" --json info &gt; "$OUT/info.json"
+utitherm-cli --ip "$CAM" frame \
   --png "$OUT/frame.png" \
   --yuv "$OUT/frame.yuv" \
   --plane "$OUT/frame.f32" \
   --require-plane &gt; "$OUT/frame.json"
 
-uti260b-cli --ip "$CAM" --json measure \
+utitherm-cli --ip "$CAM" --json measure \
   --temp-file "$OUT/frame.f32" --display 121,161 &gt; "$OUT/sample.json"
 
-uti260b-cli --ip "$CAM" capture --dir "$OUT/capture" --raw "$OUT/capture/raw.bin" \
+utitherm-cli --ip "$CAM" capture --dir "$OUT/capture" --raw "$OUT/capture/raw.bin" \
   &gt; "$OUT/capture.json"
 
 jq -r '.temperature_c' "$OUT/sample.json"</code></pre>
@@ -729,7 +732,7 @@ jq -r '.temperature_c' "$OUT/sample.json"</code></pre>
             <tbody>
               <tr><td><code>--ip &lt;IPV4|auto&gt;</code></td><td><code>auto</code></td><td>Camera address; <code>auto</code> = default gateway of the camera AP.</td></tr>
               <tr><td><code>--port &lt;PORT&gt;</code></td><td><code>9527</code></td><td>Live-view TCP port.</td></tr>
-              <tr><td><code>--config &lt;PATH&gt;</code></td><td>local, then user config</td><td><code>./uti260b.toml</code> or <code>~/.config/uti260b/config.toml</code>.</td></tr>
+              <tr><td><code>--config &lt;PATH&gt;</code></td><td>local, then user config</td><td><code>./utitherm.toml</code> or <code>~/.config/utitherm/config.toml</code>.</td></tr>
               <tr><td><code>--connect-timeout-ms &lt;MS&gt;</code></td><td><code>2000</code></td><td>TCP connect timeout.</td></tr>
               <tr><td><code>--read-timeout-ms &lt;MS&gt;</code></td><td><code>2000</code></td><td>Socket read/write timeout; PhotoCap internally raises it.</td></tr>
               <tr><td><code>--fps &lt;N&gt;</code></td><td><code>20</code></td><td>Frame-loop target rate, 1..60. Actual rate is device-bound.</td></tr>
@@ -757,15 +760,15 @@ jq -r '.temperature_c' "$OUT/sample.json"</code></pre>
         <div class="cmd-head">
           <span class="method read">READ</span>
           <h3>info</h3>
-          <span class="syn">uti260b-cli info [--json]</span>
+          <span class="syn">utitherm-cli info [--json]</span>
         </div>
         <div class="cmd-body">
           <p>Reads the <code>init</code> reply: firmware strings, emissivity, distance,
           humidity, unit byte, image mode, PiP rectangle and alarm settings.</p>
           <div class="code">
             <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
-<pre><code>uti260b-cli info
-uti260b-cli --ip 192.168.27.10 --json info | jq '.versions, .unit'</code></pre>
+<pre><code>utitherm-cli info
+utitherm-cli --ip 192.168.27.10 --json info | jq '.versions, .unit'</code></pre>
           </div>
           <p class="small muted"><strong>Human output</strong> is one <code>key: value</code> per line;
           <strong>JSON</strong> is a single object. The raw unit byte is always included, even when
@@ -778,7 +781,7 @@ uti260b-cli --ip 192.168.27.10 --json info | jq '.versions, .unit'</code></pre>
         <div class="cmd-head">
           <span class="method read">READ</span>
           <h3>frame</h3>
-          <span class="syn">uti260b-cli frame [--png P] [--yuv P] [--plane P]</span>
+          <span class="syn">utitherm-cli frame [--png P] [--yuv P] [--plane P]</span>
         </div>
         <div class="cmd-body">
           <p>Waits for one new live frame and optionally writes it. The device sends a
@@ -788,8 +791,8 @@ uti260b-cli --ip 192.168.27.10 --json info | jq '.versions, .unit'</code></pre>
             <table>
               <thead><tr><th>Flag</th><th>Default</th><th>Effect</th></tr></thead>
               <tbody>
-                <tr><td><code>--png &lt;PATH&gt;</code></td><td>—</td><td>Write RGBA8 PNG, 240×320.</td></tr>
-                <tr><td><code>--yuv &lt;PATH&gt;</code></td><td>—</td><td>Write raw planar YUV 4:2:0, 115 200 bytes.</td></tr>
+                <tr><td><code>--png &lt;PATH&gt;</code></td><td>—</td><td>Write RGBA8 PNG at the detected display size.</td></tr>
+                <tr><td><code>--yuv &lt;PATH&gt;</code></td><td>—</td><td>Write the raw pixel block: I420 or RGB888, size from the detected geometry.</td></tr>
                 <tr><td><code>--plane &lt;PATH&gt;</code></td><td>—</td><td>Write the f32 LE temperature plane if present.</td></tr>
                 <tr><td><code>--require-plane</code></td><td>off</td><td>Poll until an extended frame with a plane is received.</td></tr>
                 <tr><td><code>--max-frames &lt;N&gt;</code></td><td><code>33</code></td><td>Upper bound while waiting for the plane.</td></tr>
@@ -799,11 +802,11 @@ uti260b-cli --ip 192.168.27.10 --json info | jq '.versions, .unit'</code></pre>
           <div class="code">
             <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
 <pre><code><span class="cm"># snapshot + plane in one shot</span>
-uti260b-cli frame --png shot.png --yuv shot.yuv \
+utitherm-cli frame --png shot.png --yuv shot.yuv \
   --plane shot.f32 --require-plane
 
 <span class="cm"># JSON metadata on stdout, files on disk</span>
-uti260b-cli --json frame --png shot.png --plane shot.f32 \
+utitherm-cli --json frame --png shot.png --plane shot.f32 \
   --require-plane | jq '{seq, plane}'</code></pre>
           </div>
           <div class="callout warn">
@@ -819,7 +822,7 @@ uti260b-cli --json frame --png shot.png --plane shot.f32 \
         <div class="cmd-head">
           <span class="method read">READ</span>
           <h3>frames</h3>
-          <span class="syn">uti260b-cli frames --count N --dir DIR</span>
+          <span class="syn">utitherm-cli frames --count N --dir DIR</span>
         </div>
         <div class="cmd-body">
           <p>Writes N sampled live frames into a directory. Each sample waits for the newest
@@ -831,19 +834,19 @@ uti260b-cli --json frame --png shot.png --plane shot.f32 \
                 <tr><td><code>--count &lt;N&gt;</code></td><td><code>1</code></td><td>Number of frames to save.</td></tr>
                 <tr><td><code>--dir &lt;DIR&gt;</code></td><td><code>frames</code></td><td>Output directory, created if needed.</td></tr>
                 <tr><td><code>--png</code></td><td>auto</td><td>Save PNG frames.</td></tr>
-                <tr><td><code>--yuv</code></td><td>auto</td><td>Save raw YUV frames.</td></tr>
+                <tr><td><code>--yuv</code></td><td>auto</td><td>Save raw pixel frames (`.yuv` for I420, `.rgb` for RGB888).</td></tr>
                 <tr><td><code>--plane</code></td><td>off</td><td>Save <code>_temp.f32</code> on extended frames.</td></tr>
               </tbody>
             </table>
           </div>
-          <p class="small muted">With no format flag, PNG + YUV are written. Supplying any format flag
+          <p class="small muted">With no format flag, PNG + raw pixels are written. Supplying any format flag
           switches to exactly those formats. Plane files appear only on the 11th-frame cadence.</p>
           <div class="code">
             <div class="code-head"><span class="lang">output tree</span><button class="copy" type="button">Copy</button></div>
 <pre><code>frames/
-├── frame_000123.png          # RGBA8 240×320
-├── frame_000123.yuv          # 115 200 B YUV 4:2:0
-├── frame_000123_temp.f32     # only if extended frame (196 608 B)
+├── frame_000123.png          # RGBA8 at detected display size
+├── frame_000123.yuv          # I420 raw pixels (`.rgb` for RGB888)
+├── frame_000123_temp.f32     # only if an f32 plane arrived
 ├── frame_000124.png
 └── frame_000124.yuv</code></pre>
           </div>
@@ -855,7 +858,7 @@ uti260b-cli --json frame --png shot.png --plane shot.f32 \
         <div class="cmd-head">
           <span class="method capture">CAPTURE</span>
           <h3>capture</h3>
-          <span class="syn">uti260b-cli capture --dir DIR</span>
+          <span class="syn">utitherm-cli capture --dir DIR</span>
         </div>
         <div class="cmd-body">
           <p>Runs <code>PhotoCap</code> once and writes every section. This is the
@@ -883,10 +886,10 @@ uti260b-cli --json frame --png shot.png --plane shot.f32 \
           </div>
           <div class="code">
             <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
-<pre><code>uti260b-cli capture --dir capture --name scene42 \
+<pre><code>utitherm-cli capture --dir capture --name scene42 \
   --raw capture/scene42_raw.bin
 
-uti260b-cli --json capture --dir capture \
+utitherm-cli --json capture --dir capture \
   | jq '.temperature, .sections.temperature_c'</code></pre>
           </div>
           <p class="small">File naming and byte layouts are documented in
@@ -899,7 +902,7 @@ uti260b-cli --json capture --dir capture \
         <div class="cmd-head">
           <span class="method read">IMPORT</span>
           <h3>import</h3>
-          <span class="syn">uti260b-cli import --path DIR</span>
+          <span class="syn">utitherm-cli import --path DIR</span>
         </div>
         <div class="cmd-body">
           <p>Scans a mounted camera volume <strong>read-only</strong>, validates every
@@ -926,15 +929,15 @@ uti260b-cli --json capture --dir capture \
           <div class="code">
             <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
 <pre><code><span class="cm"># auto-detect a mounted UTi260B+ volume</span>
-uti260b-cli --json import --cache usb-cache
+utitherm-cli --json import --cache usb-cache
 
 <span class="cm"># explicit read-only mount, then list what was indexed</span>
-uti260b-cli import --path /run/media/$USER/585A980C530F08BD --cache usb-cache
-uti260b-cli --json import --cache usb-cache --list
+utitherm-cli import --path /run/media/$USER/585A980C530F08BD --cache usb-cache
+utitherm-cli --json import --cache usb-cache --list
 
 <span class="cm"># one file, then sample it offline</span>
-uti260b-cli import --path /media/UTi/DCIM/202610240001E.jpg
-uti260b-cli measure --usb-file /media/UTi/DCIM/202610240001E.jpg --display 121,161</code></pre>
+utitherm-cli import --path /media/UTi/DCIM/202610240001E.jpg
+utitherm-cli measure --usb-file /media/UTi/DCIM/202610240001E.jpg --display 121,161</code></pre>
           </div>
           <p class="small muted">Auto-discovery requires a mounted volume whose root contains
           <code>AUTORUN.INF</code> with the configured marker (default <code>UNIT UTi260B+</code>)
@@ -949,7 +952,7 @@ uti260b-cli measure --usb-file /media/UTi/DCIM/202610240001E.jpg --display 121,1
         <div class="cmd-head">
           <span class="method read">READ</span>
           <h3>measure</h3>
-          <span class="syn">uti260b-cli measure --display X,Y</span>
+          <span class="syn">utitherm-cli measure --display X,Y</span>
         </div>
         <div class="cmd-body">
           <p>Returns one temperature. Source can be the live plane, a saved raw plane, or a
@@ -958,8 +961,8 @@ uti260b-cli measure --usb-file /media/UTi/DCIM/202610240001E.jpg --display 121,1
             <table>
               <thead><tr><th>Flag</th><th>Effect</th></tr></thead>
               <tbody>
-                <tr><td><code>--display X,Y</code></td><td>Coordinate in the 240×320 streamed frame.</td></tr>
-                <tr><td><code>--plane PX,PY</code></td><td>Direct 192×256 plane coordinate.</td></tr>
+                <tr><td><code>--display X,Y</code></td><td>Coordinate in the detected display frame (240×320 on the reference model).</td></tr>
+                <tr><td><code>--plane PX,PY</code></td><td>Direct coordinate in the detected raw plane (192×256 on the reference model).</td></tr>
                 <tr><td><code>--temp-file PATH</code></td><td>Read a raw 196 608-byte f32 LE plane; no network.</td></tr>
                 <tr><td><code>--capture-file PATH</code></td><td>Read a framed or bare PhotoCap reply; no network.</td></tr>
                 <tr><td><code>--usb-file PATH</code></td><td>Read one USB radiometric container; no network.</td></tr>
@@ -968,16 +971,17 @@ uti260b-cli measure --usb-file /media/UTi/DCIM/202610240001E.jpg --display 121,1
           </div>
           <p class="small muted">If neither <code>--display</code> nor <code>--plane</code> is given,
           the centre sample plane (96,128) is used. Display mapping is
-          <code>plane = floor(display / 1.25)</code>, with no rotation or flip.</p>
+          <code>plane = display × raw/display scale</code>, with no rotation or flip
+          (1.25 on the UTi260B+).</p>
           <div class="code">
             <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
 <pre><code><span class="cm"># live plane (waits up to the command timeout for an extended frame)</span>
-uti260b-cli --json measure --display 121,161
+utitherm-cli --json measure --display 121,161
 
 <span class="cm"># fully offline</span>
-uti260b-cli --json measure --temp-file scene42_temperature.f32 --display 121,161
-uti260b-cli --json measure --capture-file scene42_raw.bin --plane 96,128
-uti260b-cli --json measure --usb-file /media/UTi/DCIM/202610240001E.jpg --display 121,161</code></pre>
+utitherm-cli --json measure --temp-file scene42_temperature.f32 --display 121,161
+utitherm-cli --json measure --capture-file scene42_raw.bin --plane 96,128
+utitherm-cli --json measure --usb-file /media/UTi/DCIM/202610240001E.jpg --display 121,161</code></pre>
           </div>
         </div>
       </article>
@@ -987,7 +991,7 @@ uti260b-cli --json measure --usb-file /media/UTi/DCIM/202610240001E.jpg --displa
         <div class="cmd-head">
           <span class="method write">WRITE</span>
           <h3>palette</h3>
-          <span class="syn">uti260b-cli palette &lt;0..7&gt;</span>
+          <span class="syn">utitherm-cli palette &lt;0..7&gt;</span>
         </div>
         <div class="cmd-body">
           <p>Sends <code>colorChange+&lt;n&gt;</code> (no reply), then inspects following frames
@@ -1004,8 +1008,8 @@ uti260b-cli --json measure --usb-file /media/UTi/DCIM/202610240001E.jpg --displa
           </div>
           <div class="code">
             <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
-<pre><code>uti260b-cli palette 3
-uti260b-cli --json palette 3 --frames 10</code></pre>
+<pre><code>utitherm-cli palette 3
+utitherm-cli --json palette 3 --frames 10</code></pre>
           </div>
           <div class="callout warn">
             <div class="ci">!</div>
@@ -1021,7 +1025,7 @@ uti260b-cli --json palette 3 --frames 10</code></pre>
         <div class="cmd-head">
           <span class="method write">WRITE</span>
           <h3>unit</h3>
-          <span class="syn">uti260b-cli unit &lt;celsius|kelvin|flag2-clear|flag2-set&gt;</span>
+          <span class="syn">utitherm-cli unit &lt;celsius|kelvin|flag2-clear|flag2-set&gt;</span>
         </div>
         <div class="cmd-body">
           <p>Sends one verified <code>measUnit</code> pair, waits, then re-reads <code>init</code>
@@ -1042,8 +1046,8 @@ uti260b-cli --json palette 3 --frames 10</code></pre>
           </div>
           <div class="code">
             <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
-<pre><code>uti260b-cli unit celsius
-uti260b-cli --json unit kelvin --settle-ms 1200</code></pre>
+<pre><code>utitherm-cli unit celsius
+utitherm-cli --json unit kelvin --settle-ms 1200</code></pre>
           </div>
           <div class="callout danger">
             <div class="ci">!</div>
@@ -1060,7 +1064,7 @@ uti260b-cli --json unit kelvin --settle-ms 1200</code></pre>
         <div class="cmd-head">
           <span class="method write">WRITE</span>
           <h3>shutter</h3>
-          <span class="syn">uti260b-cli shutter</span>
+          <span class="syn">utitherm-cli shutter</span>
         </div>
         <div class="cmd-body">
           <p>Requests a manual flat-field correction (FFC) with
@@ -1076,8 +1080,8 @@ uti260b-cli --json unit kelvin --settle-ms 1200</code></pre>
           </div>
           <div class="code">
             <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
-<pre><code>uti260b-cli shutter
-uti260b-cli --json shutter</code></pre>
+<pre><code>utitherm-cli shutter
+utitherm-cli --json shutter</code></pre>
           </div>
         </div>
       </article>
@@ -1087,7 +1091,7 @@ uti260b-cli --json shutter</code></pre>
         <div class="cmd-head">
           <span class="method stream">STREAM</span>
           <h3>watch</h3>
-          <span class="syn">uti260b-cli watch --json --sample X,Y</span>
+          <span class="syn">utitherm-cli watch --json --sample X,Y</span>
         </div>
         <div class="cmd-body">
           <p>Keeps one session open and emits one record per frame. With <code>--json</code> this is
@@ -1104,11 +1108,11 @@ uti260b-cli --json shutter</code></pre>
           </div>
           <div class="code">
             <div class="code-head"><span class="lang">bash — JSON Lines</span><button class="copy" type="button">Copy</button></div>
-<pre><code>uti260b-cli --json watch --duration-ms 60000 \
+<pre><code>utitherm-cli --json watch --duration-ms 60000 \
   --sample 121,161 &gt; stream.jsonl
 
 <span class="cm"># live CSV of key temperature A</span>
-uti260b-cli --json watch | jq -r '[.seq, .key_c[0]] | @csv' &gt; keys.csv</code></pre>
+utitherm-cli --json watch | jq -r '[.seq, .key_c[0]] | @csv' &gt; keys.csv</code></pre>
           </div>
         </div>
       </article>
@@ -1167,6 +1171,7 @@ uti260b-cli --json watch | jq -r '[.seq, .key_c[0]] | @csv' &gt; keys.csv</code>
 <pre><code>{
   "seq": 5,
   "rtt_ms": 77.7,
+  "geometry": { "display": [240, 320], "raw": [192, 256], "format": "I420" },
   "key_c": [33.05, 28.13, 28.79],
   "plane": {
     "present": true,
@@ -1500,6 +1505,8 @@ let t_c = temp[py * 192 + px];</code></pre>
         </div>
 
         <h3>Section table</h3>
+        <p class="small muted">Sizes below are the UTi260B+ reference capture; section lengths
+        and the raw/display geometry are authoritative on all family models.</p>
         <div class="table-wrap">
           <table>
             <thead><tr><th>#</th><th>Kind</th><th>Length</th><th>Encoding / geometry</th><th>File</th></tr></thead>
@@ -1551,10 +1558,10 @@ print(sections[0][:2], sections[2][:2])              # b'\xff\xd8' SOI</code></p
         <div class="code">
           <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
 <pre><code><span class="cm"># sample without a camera</span>
-uti260b-cli --json measure --capture-file capture_raw.bin --display 121,161
+utitherm-cli --json measure --capture-file capture_raw.bin --display 121,161
 
 <span class="cm"># verify luma/orientation against the OSD JPEG (GUI binary)</span>
-uti260b-viewer --verify-capture capture_raw.bin</code></pre>
+utitherm-viewer --verify-capture capture_raw.bin</code></pre>
         </div>
       </section>
 
@@ -1746,12 +1753,12 @@ CAM="${CAM:-192.168.27.10}"
 OUT="${1:-snapshot}"
 mkdir -p "$OUT"
 
-uti260b-cli --ip "$CAM" --quiet frame \
+utitherm-cli --ip "$CAM" --quiet frame \
   --png "$OUT/frame.png" \
   --plane "$OUT/frame.f32" \
   --require-plane &gt; "$OUT/frame.json"
 
-temp=$(uti260b-cli --json measure \
+temp=$(utitherm-cli --json measure \
   --temp-file "$OUT/frame.f32" --display 121,161 | jq -r '.temperature_c')
 
 printf 'sample: %s °C\n' "$temp"</code></pre>
@@ -1762,28 +1769,28 @@ printf 'sample: %s °C\n' "$temp"</code></pre>
           <div class="code-head"><span class="lang">bash — jq predicate</span><button class="copy" type="button">Copy</button></div>
 <pre><code>LIMIT=40
 while sleep 1; do
-  t=$(uti260b-cli --json --quiet measure --display 121,161 | jq -r '.temperature_c')
+  t=$(utitherm-cli --json --quiet measure --display 121,161 | jq -r '.temperature_c')
   if jq -en --argjson t "$t" --argjson lim "$LIMIT" '$t &gt; $lim' &gt;/dev/null; then
     notify-send "Thermal alarm" "$t °C at sample point"
   fi
 done
 
 <span class="cm"># tighter loop: one connection, parse JSON Lines</span>
-uti260b-cli --json watch --sample 121,161 \
+utitherm-cli --json watch --sample 121,161 \
   | jq -r 'select(.sample_c &gt; 40) | "ALARM \(.sample_c) °C seq \(.seq)"'</code></pre>
         </div>
 
         <h3>Capture once, measure many</h3>
         <div class="code">
           <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
-<pre><code>uti260b-cli capture --dir ./scene --raw ./scene/raw.bin
+<pre><code>utitherm-cli capture --dir ./scene --raw ./scene/raw.bin
 
 for xy in 60,80 121,161 200,240; do
-  uti260b-cli --json measure --capture-file ./scene/raw.bin --display "$xy"
+  utitherm-cli --json measure --capture-file ./scene/raw.bin --display "$xy"
 done
 
 <span class="cm"># or from the extracted plane</span>
-uti260b-cli --json measure --temp-file ./scene/capture_temperature.f32 --plane 96,128</code></pre>
+utitherm-cli --json measure --temp-file ./scene/capture_temperature.f32 --plane 96,128</code></pre>
         </div>
 
         <h3>Python</h3>
@@ -1794,7 +1801,7 @@ import subprocess
 
 def measure(display="121,161", ip="192.168.27.10"):
     out = subprocess.run(
-        ["uti260b-cli", "--ip", ip, "--json", "--quiet",
+        ["utitherm-cli", "--ip", ip, "--json", "--quiet",
          "measure", "--display", display],
         capture_output=True, text=True, check=True,
     )
@@ -1808,7 +1815,7 @@ print(sample["temperature_c"], sample["plane"])</code></pre>
         <div class="code">
           <div class="code-head"><span class="lang">crontab</span><button class="copy" type="button">Copy</button></div>
 <pre><code># every 5 minutes: snapshot + capture metadata
-*/5 * * * * /home/me/bin/uti260b-cli --ip 192.168.27.10 --json \
+*/5 * * * * /home/me/bin/utitherm-cli --ip 192.168.27.10 --json \
   capture --dir /srv/thermal/$(date +\%Y\%m\%d-\%H\%M) \
   &gt;&gt; /var/log/thermal.jsonl 2&gt;&gt; /var/log/thermal.err</code></pre>
         </div>
@@ -1817,7 +1824,7 @@ print(sample["temperature_c"], sample["plane"])</code></pre>
         <div class="code">
           <div class="code-head"><span class="lang">bash</span><button class="copy" type="button">Copy</button></div>
 <pre><code><span class="cm"># 60 sampled frames; PNG + YUV; planes on extended frames</span>
-uti260b-cli frames --count 60 --dir ./frames --png --yuv --plane
+utitherm-cli frames --count 60 --dir ./frames --png --yuv --plane
 
 <span class="cm"># build a heat-map video from the saved planes (requires ffmpeg)</span>
 for f in frames/*_temp.f32; do
@@ -1977,21 +1984,21 @@ done</code></pre>
         </div>
         <div class="code">
           <div class="code-head"><span class="lang">bash — cheat sheet</span><button class="copy" type="button">Copy</button></div>
-<pre><code>uti260b-cli info
-uti260b-cli frame --png f.png --plane f.f32 --require-plane
-uti260b-cli frames --count 10 --dir frames --png --yuv --plane
-uti260b-cli capture --dir cap --raw cap/raw.bin
-uti260b-cli measure --display 121,161
-uti260b-cli measure --temp-file cap/capture_temperature.f32 --display 121,161
-uti260b-cli measure --capture-file cap/raw.bin --plane 96,128
-uti260b-cli measure --usb-file /media/UTi/DCIM/202610240001E.jpg --display 121,161
-uti260b-cli import --path /run/media/$USER/585A980C530F08BD
-uti260b-cli palette 3 --frames 10
-uti260b-cli unit celsius --settle-ms 1000
-uti260b-cli --json watch --sample 121,161</code></pre>
+<pre><code>utitherm-cli info
+utitherm-cli frame --png f.png --plane f.f32 --require-plane
+utitherm-cli frames --count 10 --dir frames --png --yuv --plane
+utitherm-cli capture --dir cap --raw cap/raw.bin
+utitherm-cli measure --display 121,161
+utitherm-cli measure --temp-file cap/capture_temperature.f32 --display 121,161
+utitherm-cli measure --capture-file cap/raw.bin --plane 96,128
+utitherm-cli measure --usb-file /media/UTi/DCIM/202610240001E.jpg --display 121,161
+utitherm-cli import --path /run/media/$USER/585A980C530F08BD
+utitherm-cli palette 3 --frames 10
+utitherm-cli unit celsius --settle-ms 1000
+utitherm-cli --json watch --sample 121,161</code></pre>
         </div>
         <div class="footer">
-          <span>uti260b-cli 0.1.0 · clean-room implementation · TCP 9527</span>
+          <span>utitherm-cli 0.1.0 · clean-room implementation · TCP 9527</span>
           <span><a href="#top">Back to top</a> · <a href="../UTi260B-plus-protocol-spec.md">Protocol spec</a></span>
         </div>
       </section>
@@ -2009,7 +2016,7 @@ uti260b-cli --json watch --sample 121,161</code></pre>
   const root = document.documentElement;
   const themeBtn = document.getElementById('theme-toggle');
   let stored = null;
-  try { stored = localStorage.getItem('uti260b-theme'); } catch {}
+  try { stored = localStorage.getItem('utitherm-theme'); } catch {}
   if (stored === 'light' || stored === 'dark') {
     root.dataset.theme = stored;
   } else if (matchMedia('(prefers-color-scheme: light)').matches) {
@@ -2018,7 +2025,7 @@ uti260b-cli --json watch --sample 121,161</code></pre>
   themeBtn.addEventListener('click', () => {
     const next = root.dataset.theme === 'light' ? 'dark' : 'light';
     root.dataset.theme = next;
-    try { localStorage.setItem('uti260b-theme', next); } catch {}
+    try { localStorage.setItem('utitherm-theme', next); } catch {}
   });
 
   document.querySelectorAll('.copy').forEach((button) => {
