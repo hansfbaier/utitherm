@@ -7,7 +7,7 @@
 //! Commands are a typed whitelist (§3, §13.10): the device daemon exits on a
 //! malformed command, so there is no free-form command input.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::BufWriter;
 use std::path::PathBuf;
@@ -21,6 +21,8 @@ use crate::net::{ConnState, Event, Level, NetStats, StreamConfig, Worker};
 use crate::palette::{PALETTE_MATCH_DISTANCE, equivalent, frame_signature, nearest_palette};
 use crate::protocol::{self, Command, FRAME_H, FRAME_W, InitReply, Palette, UnitCommand};
 use crate::replay::ReplayWorker;
+use crate::usb::UsbMetadata;
+use crate::usb_worker::{ImportedUsb, UsbEvent, UsbWorker};
 
 const LOG_CAPACITY: usize = 400;
 const TOAST_SECS: f32 = 6.0;
@@ -128,6 +130,17 @@ pub struct CameraApp {
     capture_stats: Option<TempStats>,
     live_plane: Option<Arc<Vec<f32>>>,
     live_plane_stats: Option<TempStats>,
+
+    usb_worker: Option<UsbWorker>,
+    usb_entries: Vec<ImportedUsb>,
+    usb_textures: HashMap<String, egui::TextureHandle>,
+    usb_volumes: Vec<String>,
+    usb_status: String,
+    usb_selected: Option<String>,
+    usb_plane: Option<Arc<Vec<f32>>>,
+    usb_stats: Option<TempStats>,
+    usb_meta: Option<UsbMetadata>,
+    usb_paused: bool,
     capture_pending: bool,
     capture_pending_since: Option<Instant>,
     sample: Option<Sample>,
@@ -149,7 +162,7 @@ impl CameraApp {
         cc: &eframe::CreationContext<'_>,
         config: Config,
         mode: Mode,
-        startup_notes: Vec<String>,
+        mut startup_notes: Vec<String>,
     ) -> Result<Self, String> {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
 
@@ -161,6 +174,15 @@ impl CameraApp {
                 Controller::Replay(ReplayWorker::spawn(path, config.target_fps)?)
             }
         };
+
+        let usb_worker =
+            match UsbWorker::spawn(PathBuf::from("usb-cache"), None, config.usb_marker.clone()) {
+                Ok(worker) => Some(worker),
+                Err(err) => {
+                    startup_notes.push(format!("USB import worker unavailable: {err}"));
+                    None
+                }
+            };
 
         let ip_text = match config.camera {
             crate::config::CameraAddr::Auto => "auto".to_owned(),
@@ -187,6 +209,16 @@ impl CameraApp {
             capture_stats: None,
             live_plane: None,
             live_plane_stats: None,
+            usb_worker,
+            usb_entries: Vec::new(),
+            usb_textures: HashMap::new(),
+            usb_volumes: Vec::new(),
+            usb_status: "scanning for a camera volume".to_owned(),
+            usb_selected: None,
+            usb_plane: None,
+            usb_stats: None,
+            usb_meta: None,
+            usb_paused: false,
             capture_pending: false,
             capture_pending_since: None,
             sample: None,
@@ -226,6 +258,7 @@ impl CameraApp {
     // -- event pump ---------------------------------------------------------
 
     fn pump_events(&mut self, ctx: &egui::Context) {
+        self.pump_usb_events(ctx);
         for event in self.ctrl.try_events() {
             match event {
                 Event::State { state, detail } => {
@@ -255,6 +288,15 @@ impl CameraApp {
                     }
                     self.state = state;
                     self.state_detail = detail;
+                    if matches!(self.mode, Mode::Live) {
+                        let paused = self.state.is_active();
+                        if paused != self.usb_paused {
+                            self.usb_paused = paused;
+                            if let Some(worker) = &self.usb_worker {
+                                worker.set_paused(paused);
+                            }
+                        }
+                    }
                 }
                 Event::Init(reply) => {
                     self.push_log(
@@ -300,6 +342,12 @@ impl CameraApp {
                     self.init = Some(*reply);
                 }
                 Event::Stats(stats) => self.stats = stats,
+                Event::CaptureRejected(detail) => {
+                    self.capture_pending = false;
+                    self.capture_pending_since = None;
+                    self.push_log(Level::Warn, detail.clone());
+                    self.toast(detail, true);
+                }
                 Event::Capture(capture) => {
                     let stats = capture.stats();
                     self.capture_stats = Some(stats);
@@ -358,6 +406,48 @@ impl CameraApp {
                 && let Some(current) = self.last_frame.clone()
             {
                 self.upload_texture(ctx, &current, nearest);
+            }
+        }
+    }
+
+    fn pump_usb_events(&mut self, ctx: &egui::Context) {
+        let events = self
+            .usb_worker
+            .as_ref()
+            .map(UsbWorker::try_events)
+            .unwrap_or_default();
+        for event in events {
+            match event {
+                UsbEvent::Volumes(volumes) => self.usb_volumes = volumes,
+                UsbEvent::Status(status) => self.usb_status = status,
+                UsbEvent::Imported(imported) => {
+                    let imported = *imported;
+                    let sha = imported.entry.sha256.clone();
+                    if let Some(rgba) = &imported.thumbnail_rgba {
+                        let image =
+                            egui::ColorImage::from_rgba_unmultiplied([FRAME_W, FRAME_H], rgba);
+                        self.usb_textures.entry(sha.clone()).or_insert_with(|| {
+                            ctx.load_texture(
+                                format!("usb-{sha}"),
+                                image,
+                                egui::TextureOptions::LINEAR,
+                            )
+                        });
+                    }
+                    if let Some(existing) = self
+                        .usb_entries
+                        .iter_mut()
+                        .find(|entry| entry.entry.sha256 == sha)
+                    {
+                        *existing = imported;
+                    } else {
+                        self.usb_entries.push(imported);
+                    }
+                    self.usb_entries
+                        .sort_by_key(|entry| std::cmp::Reverse(entry.entry.imported_at));
+                }
+                UsbEvent::Error(text) => self.push_log(Level::Error, text),
+                UsbEvent::Log { level, text } => self.push_log(level, text),
             }
         }
     }
@@ -513,7 +603,7 @@ impl CameraApp {
                 self.capture_pending = true;
                 self.capture_pending_since = Some(Instant::now());
             }
-            Command::Init | Command::VFrame => {}
+            Command::Init | Command::VFrame | Command::HeartBack => {}
         }
 
         self.push_log(Level::Info, format!("→ {}", command.describe()));
@@ -808,6 +898,10 @@ impl CameraApp {
     fn measurement_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Measurement");
         let Some(capture) = self.capture.clone() else {
+            if self.usb_plane.is_some() {
+                self.usb_measurement_panel(ui);
+                return;
+            }
             if let Some(stats) = self.live_plane_stats {
                 row(
                     ui,
@@ -852,7 +946,7 @@ impl CameraApp {
             }
             ui.weak(
                 "No temperature plane yet. The device appends one to every 11th vFrame; \
-                 PhotoCap gives a full-resolution capture (~3.3 s, writes a file).",
+                 PhotoCap gives a full-resolution capture (several seconds, no SD write).",
             );
             return;
         };
@@ -920,6 +1014,236 @@ impl CameraApp {
             "Section 0 is the OSD JPEG, section 2 the clean 480×640 JPEG. The u16 plane \
              is not linear in temperature; it is kept for diagnostics only (spec §6.1).",
         );
+    }
+
+    fn usb_measurement_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(stats) = self.usb_stats else {
+            return;
+        };
+        let selected = self.usb_selected.clone();
+        let (name, metadata) = selected
+            .as_ref()
+            .and_then(|sha| {
+                self.usb_entries
+                    .iter()
+                    .find(|entry| &entry.entry.sha256 == sha)
+                    .map(|entry| {
+                        (
+                            entry.entry.source_name.clone(),
+                            entry.entry.metadata.clone(),
+                        )
+                    })
+            })
+            .unwrap_or_else(|| ("USB import".to_owned(), UsbMetadata::default()));
+
+        row(ui, "source", &format!("USB import · {name} (read-only)"));
+        row(ui, "firmware", &metadata.firmware);
+        row(ui, "model", &metadata.model);
+        row(
+            ui,
+            "emissivity",
+            &metadata
+                .emissivity
+                .map(|value| format!("{value:.2}"))
+                .unwrap_or_else(|| "—".to_owned()),
+        );
+        row(
+            ui,
+            "distance",
+            &metadata
+                .distance_m
+                .map(|value| format!("{value:.2} m"))
+                .unwrap_or_else(|| "—".to_owned()),
+        );
+        row(
+            ui,
+            "humidity",
+            &metadata
+                .humidity_pct
+                .map(|value| format!("{value} %RH"))
+                .unwrap_or_else(|| "—".to_owned()),
+        );
+        row(
+            ui,
+            "ambient",
+            &metadata
+                .ambient
+                .map(|value| format!("{value:.1}"))
+                .unwrap_or_else(|| "—".to_owned()),
+        );
+        row(
+            ui,
+            "unit",
+            &metadata
+                .unit
+                .map(|value| format!("byte {value}"))
+                .unwrap_or_else(|| "—".to_owned()),
+        );
+        row(
+            ui,
+            "range",
+            &format!("{:.2} … {:.2} °C", stats.min, stats.max),
+        );
+        row(
+            ui,
+            "mean / σ",
+            &format!("{:.2} / {:.2} °C", stats.mean, stats.std_dev),
+        );
+        row(ui, "mapping", "display / 1.25, no flip");
+        match self.sample {
+            Some(sample) => {
+                row(ui, "sample", &format!("{:.2} °C", sample.temperature_c));
+                row(
+                    ui,
+                    "coords",
+                    &format!(
+                        "display ({:.1}, {:.1}) → plane ({}, {})",
+                        sample.display[0], sample.display[1], sample.plane[0], sample.plane[1]
+                    ),
+                );
+            }
+            None => {
+                ui.small("Click the image to sample the imported plane.");
+            }
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Export USB plane").clicked() {
+                self.export_usb_plane();
+            }
+            if ui.button("Use live plane").clicked() {
+                self.clear_usb_selection();
+            }
+        });
+        ui.small("Imported files are copied to a host cache; the camera volume is never written.");
+    }
+
+    fn usb_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("USB import");
+        ui.small(
+            "Read-only: never write, rename, delete or repair the camera volume. Selecting USB \
+             mode on the camera may drop its access point.",
+        );
+        let status = self.usb_status.clone();
+        let volumes = self.usb_volumes.clone();
+        ui.horizontal(|ui| {
+            if ui.button("Rescan").clicked()
+                && let Some(worker) = &self.usb_worker
+            {
+                worker.rescan();
+            }
+            ui.weak(status);
+        });
+        for volume in &volumes {
+            ui.small(volume);
+        }
+        if self.usb_entries.is_empty() {
+            ui.weak(
+                "No imported files yet. Mount the camera volume read-only; imports are keyed by \
+                 content hash.",
+            );
+            return;
+        }
+
+        ui.small("Click a thumbnail to use its plane for measurement.");
+        let mut clicked = None;
+        for index in 0..self.usb_entries.len() {
+            let (sha, name, firmware, min, max, selected) = {
+                let entry = &self.usb_entries[index];
+                (
+                    entry.entry.sha256.clone(),
+                    entry.entry.source_name.clone(),
+                    entry.entry.metadata.firmware.clone(),
+                    entry.entry.min_c,
+                    entry.entry.max_c,
+                    self.usb_selected.as_deref() == Some(entry.entry.sha256.as_str()),
+                )
+            };
+            let texture = self.usb_textures.get(&sha).cloned();
+            ui.horizontal(|ui| {
+                if let Some(texture) = texture {
+                    ui.add(egui::Image::new(&texture).fit_to_exact_size(egui::vec2(40.0, 53.0)));
+                } else {
+                    ui.add_sized([40.0, 53.0], egui::Label::new("—"));
+                }
+                ui.vertical(|ui| {
+                    if ui.selectable_label(selected, name).clicked() {
+                        clicked = Some(sha.clone());
+                    }
+                    ui.small(format!("{firmware} · {min:.1}…{max:.1} °C"));
+                });
+            });
+        }
+        if let Some(sha) = clicked {
+            self.select_usb(&sha);
+        }
+    }
+
+    fn select_usb(&mut self, sha: &str) {
+        let Some(entry) = self
+            .usb_entries
+            .iter()
+            .find(|entry| entry.entry.sha256 == sha)
+        else {
+            return;
+        };
+        let plane = Arc::clone(&entry.plane);
+        let stats = TempStats {
+            min: entry.entry.min_c,
+            max: entry.entry.max_c,
+            mean: entry.entry.mean_c,
+            std_dev: entry.entry.std_dev_c,
+        };
+        let metadata = entry.entry.metadata.clone();
+        let name = entry.entry.source_name.clone();
+        self.usb_selected = Some(sha.to_owned());
+        self.usb_plane = Some(plane);
+        self.usb_stats = Some(stats);
+        self.usb_meta = Some(metadata);
+        self.capture = None;
+        self.capture_stats = None;
+        self.sample = None;
+        self.push_log(Level::Info, format!("USB measurement source: {name}"));
+    }
+
+    fn clear_usb_selection(&mut self) {
+        self.usb_selected = None;
+        self.usb_plane = None;
+        self.usb_stats = None;
+        self.usb_meta = None;
+        self.sample = None;
+    }
+
+    fn export_usb_plane(&mut self) {
+        let Some(plane) = self.usb_plane.clone() else {
+            self.toast("no USB plane selected", true);
+            return;
+        };
+        let dir = self.config.out_dir.clone();
+        if let Err(err) = fs::create_dir_all(&dir) {
+            let msg = format!("cannot create {}: {err}", dir.display());
+            self.push_log(Level::Error, msg.clone());
+            self.toast(msg, true);
+            return;
+        }
+        let sha = self.usb_selected.as_deref().unwrap_or("usb");
+        let stem = &sha[..12.min(sha.len())];
+        let path = dir.join(format!("usb_{stem}_plane.f32"));
+        let mut bytes = Vec::with_capacity(plane.len() * 4);
+        for value in plane.iter() {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        match fs::write(&path, bytes) {
+            Ok(()) => {
+                let msg = format!("wrote {}", path.display());
+                self.push_log(Level::Info, msg.clone());
+                self.toast(msg, false);
+            }
+            Err(err) => {
+                let msg = format!("cannot write {}: {err}", path.display());
+                self.push_log(Level::Error, msg.clone());
+                self.toast(msg, true);
+            }
+        }
     }
 
     fn device_panel(&mut self, ui: &mut egui::Ui) {
@@ -1064,8 +1388,8 @@ impl CameraApp {
             if ui
                 .add_enabled(capture_enabled, egui::Button::new(capture_label))
                 .on_hover_text(
-                    "Full-resolution capture: ~3.3 s, writes a file on the camera SD card, \
-                     returns the 192×256 f32 temperature plane",
+                    "Full-resolution capture: several seconds, no SD-card write, returns the \
+                     192×256 f32 temperature plane; serialised client-side",
                 )
                 .clicked()
             {
@@ -1159,6 +1483,8 @@ impl CameraApp {
         ui.separator();
         self.measurement_panel(ui);
         ui.separator();
+        self.usb_panel(ui);
+        ui.separator();
         self.device_panel(ui);
         ui.separator();
         self.command_panel(ui);
@@ -1169,8 +1495,8 @@ impl CameraApp {
             ui.small(
                 "Independent UTi260B+ client. Live view frames are palette-mapped \
                  240×320 YUV with three unlabelled header temperatures. Per-pixel \
-                 measurement requires PhotoCap, whose 192×256 plane maps to the display \
-                 at exactly 1.25.",
+                 measurement uses PhotoCap, the live plane, or a read-only USB import; all \
+                 planes are 192×256 and map to the display at exactly 1.25.",
             );
             ui.small(format!(
                 "Frame payload: {} B pixels + 12 B temperatures; TCP {}.",
@@ -1220,7 +1546,12 @@ impl CameraApp {
     }
 
     fn viewer(&mut self, ui: &mut egui::Ui) {
-        let Some(texture) = self.texture.clone() else {
+        let usb_texture = self
+            .usb_selected
+            .as_ref()
+            .and_then(|sha| self.usb_textures.get(sha))
+            .cloned();
+        let Some(texture) = usb_texture.or_else(|| self.texture.clone()) else {
             ui.centered_and_justified(|ui| {
                 ui.weak("No frame yet");
             });
@@ -1245,6 +1576,7 @@ impl CameraApp {
 
         let capture = self.capture.clone();
         let has_live_plane = self.live_plane.is_some();
+        let has_plane_source = self.capture.is_some() || self.usb_plane.is_some() || has_live_plane;
         let sample = self.sample;
         let mut clicked_display: Option<[f32; 2]> = None;
 
@@ -1261,7 +1593,7 @@ impl CameraApp {
 
                     if response.clicked()
                         && rect.width() > 0.0
-                        && (capture.is_some() || has_live_plane)
+                        && (capture.is_some() || has_plane_source)
                         && let Some(pos) = response.interact_pointer_pos()
                     {
                         let relative = (pos - rect.min) / rect.size();
@@ -1304,6 +1636,8 @@ impl CameraApp {
         {
             let temperature_c = if let Some(capture) = self.capture.as_ref() {
                 capture.temperature_at_display(display[0], display[1])
+            } else if let Some(plane) = self.usb_plane.as_deref() {
+                capture::sample_plane(plane, display[0], display[1])
             } else {
                 self.live_plane
                     .as_deref()
@@ -1319,14 +1653,16 @@ impl CameraApp {
         }
 
         if let Some(frame) = &self.last_frame {
-            let hint = if self.capture.is_some() || self.live_plane_stats.is_some() {
+            let source = if self.usb_plane.is_some() {
+                " · USB import"
+            } else if self.capture.is_some() || self.live_plane_stats.is_some() {
                 " · click to sample"
             } else {
                 " · waiting for a temperature plane"
             };
             ui.horizontal(|ui| {
                 ui.small(format!(
-                    "frame {} · {:.0} ms round trip · {}×{} at {scale_px:.2}×{hint}",
+                    "frame {} · {:.0} ms round trip · {}×{} at {scale_px:.2}×{source}",
                     frame.seq,
                     frame.rtt.as_secs_f32() * 1000.0,
                     FRAME_W,

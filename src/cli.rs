@@ -20,6 +20,7 @@ use crate::frame::LiveFrame;
 use crate::net::{ConnState, Event, Level, NetStats, StreamConfig, Worker};
 use crate::palette::{PALETTE_MATCH_DISTANCE, equivalent, frame_signature, nearest_palette};
 use crate::protocol::{self, Command, InitReply, Palette, UnitCommand};
+use crate::usb::{self, IndexEntry};
 
 const DEFAULT_OPERATION_TIMEOUT_MS: u64 = 20_000;
 const CAPTURE_TIMEOUT_MS: u64 = 30_000;
@@ -74,7 +75,7 @@ enum CommandLine {
     Frames(FramesArgs),
     /// Run PhotoCap and save all payload sections
     Capture(CaptureArgs),
-    /// Sample a temperature from live, saved-plane or capture data
+    /// Sample a temperature from live, saved-plane, capture or USB data
     Measure(MeasureArgs),
     /// Change the palette and check the following frames
     Palette(PaletteArgs),
@@ -82,6 +83,8 @@ enum CommandLine {
     Unit(UnitArgs),
     /// Stream one JSON object (or line) per live frame
     Watch(WatchArgs),
+    /// Import radiometric files from a read-only USB volume
+    Import(ImportArgs),
 }
 
 #[derive(clap::Args, Debug)]
@@ -147,11 +150,30 @@ struct MeasureArgs {
     #[arg(long)]
     plane: Option<String>,
     /// Read a raw f32 LE 192x256 plane instead of using the camera
-    #[arg(long, conflicts_with = "capture_file")]
+    #[arg(long, conflicts_with_all = ["capture_file", "usb_file"])]
     temp_file: Option<PathBuf>,
     /// Read a stored PhotoCap reply (framed or bare payload)
-    #[arg(long, conflicts_with = "temp_file")]
+    #[arg(long, conflicts_with_all = ["temp_file", "usb_file"])]
     capture_file: Option<PathBuf>,
+    /// Read a USB radiometric container directly
+    #[arg(long, conflicts_with_all = ["temp_file", "capture_file"])]
+    usb_file: Option<PathBuf>,
+}
+
+#[derive(clap::Args, Debug)]
+struct ImportArgs {
+    /// Mounted camera root, DCIM directory, or one .jpg file (default: scan mounts)
+    #[arg(long)]
+    path: Option<PathBuf>,
+    /// Host cache and index directory
+    #[arg(long, default_value = "usb-cache")]
+    cache: PathBuf,
+    /// Only list already imported entries
+    #[arg(long)]
+    list: bool,
+    /// `AUTORUN.INF` marker used to recognise the camera volume
+    #[arg(long)]
+    usb_marker: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -238,6 +260,7 @@ fn run_inner(cli: &Cli) -> Result<i32, String> {
         CommandLine::Palette(args) => cmd_palette(cli, args),
         CommandLine::Unit(args) => cmd_unit(cli, args),
         CommandLine::Watch(args) => cmd_watch(cli, args),
+        CommandLine::Import(args) => cmd_import(cli, args),
     }
 }
 
@@ -251,6 +274,7 @@ struct Camera {
     state: ConnState,
     init_seq: u64,
     capture_seq: u64,
+    capture_rejected: Option<String>,
     last_capture: Option<Capture>,
     last_seq: u64,
     stats: NetStats,
@@ -313,6 +337,7 @@ impl Camera {
             state: ConnState::Idle,
             init_seq: 0,
             capture_seq: 0,
+            capture_rejected: None,
             last_capture: None,
             last_seq: 0,
             stats: NetStats::default(),
@@ -357,6 +382,9 @@ impl Camera {
                 Event::Capture(capture) => {
                     self.last_capture = Some(*capture);
                     self.capture_seq = self.capture_seq.saturating_add(1);
+                }
+                Event::CaptureRejected(detail) => {
+                    self.capture_rejected = Some(detail);
                 }
             }
         }
@@ -447,10 +475,14 @@ impl Camera {
     fn run_capture(&mut self, timeout: Duration) -> Result<Capture, String> {
         self.ensure_streaming()?;
         let mark = self.capture_seq;
+        self.capture_rejected = None;
         self.worker.run(Command::PhotoCap);
         let deadline = Instant::now() + timeout;
         loop {
             self.pump();
+            if let Some(reason) = self.capture_rejected.take() {
+                return Err(format!("retryable: {reason}"));
+            }
             if self.capture_seq > mark
                 && let Some(capture) = self.last_capture.take()
             {
@@ -644,6 +676,9 @@ fn cmd_measure(cli: &Cli, args: &MeasureArgs) -> Result<i32, String> {
     } else if let Some(path) = &args.capture_file {
         let capture = capture::load_capture_file(path)?;
         (format!("capture:{}", path.display()), capture.temperature_c)
+    } else if let Some(path) = &args.usb_file {
+        let image = usb::parse_usb_file(path)?;
+        (format!("usb:{}", path.display()), image.temperature_c)
     } else {
         let mut camera = Camera::open(cli)?;
         let deadline = Instant::now() + camera.timeout;
@@ -846,6 +881,132 @@ fn cmd_watch(cli: &Cli, args: &WatchArgs) -> Result<i32, String> {
         emitted = emitted.saturating_add(1);
     }
     Ok(0)
+}
+
+fn cmd_import(cli: &Cli, args: &ImportArgs) -> Result<i32, String> {
+    let (config, warnings) = Config::load(cli.config.as_deref())?;
+    for warning in warnings {
+        eprintln!("config: {warning}");
+    }
+    let marker = args.usb_marker.as_deref().unwrap_or(&config.usb_marker);
+    let mut index = usb::load_index(&args.cache);
+    if args.list {
+        usb::refresh_index(&args.cache, &mut index);
+        let entries: Vec<Value> = index.entries.values().map(usb_entry_json).collect();
+        let value = json!({ "cache": args.cache, "entries": entries });
+        emit(cli.json, value.clone(), || print_usb_index(&value));
+        return Ok(0);
+    }
+
+    let volumes = usb::discover_volumes_with_marker(args.path.as_deref(), marker);
+    if volumes.is_empty() {
+        return Err(
+            "no UTi260B+ volume found. Mount the camera read-only and pass --path, \
+             or point --path at a DCIM directory or .jpg file; use --usb-marker for \
+             a different AUTORUN.INF label."
+                .to_owned(),
+        );
+    }
+
+    let mut imported = Vec::new();
+    let mut duplicates = 0usize;
+    let mut errors = Vec::new();
+    for volume in &volumes {
+        for file in &volume.files {
+            match usb::import_file(file, &args.cache, &mut index) {
+                Ok(outcome) if outcome.duplicate => duplicates += 1,
+                Ok(outcome) => {
+                    let mut value = usb_entry_json(&outcome.entry);
+                    value["duplicate"] = json!(false);
+                    imported.push(value);
+                }
+                Err(err) => errors.push(format!("{}: {err}", file.display())),
+            }
+        }
+    }
+
+    let value = json!({
+        "cache": args.cache,
+        "volumes": volumes.len(),
+        "imported": imported,
+        "duplicates": duplicates,
+        "errors": errors,
+    });
+    emit(cli.json, value.clone(), || print_usb_import(&value));
+    if !value["errors"].as_array().is_some_and(Vec::is_empty) {
+        return Err(format!(
+            "{} USB file(s) unreadable; see errors",
+            value["errors"].as_array().map(Vec::len).unwrap_or(0)
+        ));
+    }
+    Ok(0)
+}
+
+fn usb_entry_json(entry: &IndexEntry) -> Value {
+    json!({
+        "sha256": entry.sha256,
+        "file": entry.source_name,
+        "captured": entry.captured,
+        "cache_file": entry.cache_file,
+        "thumbnail_file": entry.thumbnail_file,
+        "metadata": entry.metadata,
+        "temperature": {
+            "min_c": entry.min_c,
+            "max_c": entry.max_c,
+            "mean_c": entry.mean_c,
+            "std_dev_c": entry.std_dev_c,
+        },
+        "imported_at": entry.imported_at,
+    })
+}
+
+fn print_usb_index(value: &Value) {
+    println!("USB cache: {}", value["cache"]);
+    if let Some(entries) = value["entries"].as_array() {
+        for entry in entries {
+            println!(
+                "{}  {}  {:.2}..{:.2} °C  fw {}",
+                entry["sha256"]
+                    .as_str()
+                    .unwrap_or("")
+                    .get(..12)
+                    .unwrap_or(""),
+                entry["file"].as_str().unwrap_or(""),
+                entry["temperature"]["min_c"].as_f64().unwrap_or(0.0),
+                entry["temperature"]["max_c"].as_f64().unwrap_or(0.0),
+                entry["metadata"]["firmware"].as_str().unwrap_or("?"),
+            );
+        }
+    }
+}
+
+fn print_usb_import(value: &Value) {
+    let imported = value["imported"].as_array().map(Vec::len).unwrap_or(0);
+    let duplicates = value["duplicates"].as_u64().unwrap_or(0);
+    println!(
+        "USB import: {imported} new, {duplicates} duplicate(s), {} error(s)",
+        value["errors"].as_array().map(Vec::len).unwrap_or(0)
+    );
+    if let Some(entries) = value["imported"].as_array() {
+        for entry in entries {
+            println!(
+                "  {}  {:.2}..{:.2} °C  {}",
+                entry["file"].as_str().unwrap_or(""),
+                entry["temperature"]["min_c"].as_f64().unwrap_or(0.0),
+                entry["temperature"]["max_c"].as_f64().unwrap_or(0.0),
+                entry["sha256"]
+                    .as_str()
+                    .unwrap_or("")
+                    .get(..12)
+                    .unwrap_or(""),
+            );
+        }
+    }
+    if let Some(errors) = value["errors"].as_array() {
+        for error in errors {
+            eprintln!("USB error: {}", error.as_str().unwrap_or(""));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

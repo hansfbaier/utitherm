@@ -25,6 +25,8 @@ pub const CMD_INIT: &str = "UTi_cmdsys:init";
 pub const CMD_VFRAME: &str = "UTi_cmdsys:vFrame";
 pub const CMD_PHOTOCAP: &str = "UTi_cmdsys:PhotoCap";
 pub const CMD_COLOR_CHANGE: &str = "UTi_cmdsys:colorChange";
+/// Idle keep-alive (§5.3). No reply, no payload; safe fire-and-forget.
+pub const CMD_HEARTBACK: &str = "UTi_cmdsys:HeartBack";
 
 /// Reply token for the init exchange [V].
 pub const TOKEN_INIT: &str = "{init}";
@@ -161,6 +163,7 @@ pub enum Command {
     Init,
     VFrame,
     PhotoCap,
+    HeartBack,
     ColorChange(Palette),
     MeasureUnit(UnitCommand),
 }
@@ -173,6 +176,7 @@ impl Command {
             Self::Init => CMD_INIT.to_owned(),
             Self::VFrame => CMD_VFRAME.to_owned(),
             Self::PhotoCap => CMD_PHOTOCAP.to_owned(),
+            Self::HeartBack => CMD_HEARTBACK.to_owned(),
             Self::ColorChange(palette) => {
                 format!("{CMD_COLOR_CHANGE}+{}", palette.index())
             }
@@ -191,7 +195,7 @@ impl Command {
             Self::Init => Some(TOKEN_INIT),
             Self::VFrame => Some(TOKEN_VFRAME),
             Self::PhotoCap => Some(TOKEN_PHOTOCAP),
-            Self::ColorChange(_) | Self::MeasureUnit(_) => None,
+            Self::HeartBack | Self::ColorChange(_) | Self::MeasureUnit(_) => None,
         }
     }
 
@@ -205,6 +209,7 @@ impl Command {
             Self::Init => "init".to_owned(),
             Self::VFrame => "vFrame".to_owned(),
             Self::PhotoCap => "PhotoCap".to_owned(),
+            Self::HeartBack => "HeartBack".to_owned(),
             Self::ColorChange(palette) => {
                 format!(
                     "colorChange+{} ({})",
@@ -614,12 +619,15 @@ impl InitReply {
 
     /// Unit byte at payload offset 88: 0 = °C and 6 = Kelvin are confirmed
     /// (§3.2); 4 appears after `measUnit+1+1` but its scale is unresolved.
+    /// Byte 2 is the documented collision state after a mixed `measUnit`
+    /// sequence; the raw byte is always shown alongside this label.
     pub fn unit_label(&self) -> &'static str {
         match self.unit {
             0 => "°C",
             6 => "K",
             4 => "unit 4 [U]",
             1 => "°F (presumed) [I]",
+            2 => "byte 2: state collision [U]",
             _ => "unknown unit",
         }
     }
@@ -858,6 +866,7 @@ mod tests {
         assert_eq!(Command::Init.wire(), "UTi_cmdsys:init");
         assert_eq!(Command::VFrame.wire(), "UTi_cmdsys:vFrame");
         assert_eq!(Command::PhotoCap.wire(), "UTi_cmdsys:PhotoCap");
+        assert_eq!(Command::HeartBack.wire(), "UTi_cmdsys:HeartBack");
 
         for (index, palette) in Palette::ALL.into_iter().enumerate() {
             assert_eq!(
@@ -885,6 +894,8 @@ mod tests {
         assert!(Command::Init.expects_reply());
         assert!(Command::VFrame.expects_reply());
         assert!(Command::PhotoCap.expects_reply());
+        assert!(!Command::HeartBack.expects_reply());
+        assert_eq!(Command::HeartBack.expected_token(), None);
         assert!(!Command::ColorChange(Palette::P3).expects_reply());
         assert!(!Command::MeasureUnit(UnitCommand::Celsius).expects_reply());
         assert!(Command::PhotoCap.is_slow());

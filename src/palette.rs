@@ -7,7 +7,8 @@
 use crate::protocol::{PALETTE_SIGNATURES, Palette};
 
 /// Euclidean distance in (mean R, G, B, saturation) still counted as a match.
-/// Generous: the decoded frame includes the burned-in OSD.
+/// Deliberately loose: the reference table is one scene including the burned-in
+/// OSD, not a palette fingerprint (§3.1).
 pub const PALETTE_MATCH_DISTANCE: f32 = 45.0;
 
 /// Mean R, G, B and mean saturation (max-min channel) of a decoded frame.

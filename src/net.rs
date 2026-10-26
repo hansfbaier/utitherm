@@ -28,8 +28,10 @@ const BACKOFF_MS: [u64; 4] = [250, 500, 1000, 2000];
 const STATS_INTERVAL: Duration = Duration::from_millis(500);
 /// Upper bound on a single control-wait, keeps stop/shutdown responsive.
 const CONTROL_POLL: Duration = Duration::from_millis(100);
-/// `PhotoCap` takes ~3.3 s on the device (§6); the frame timeout would be too short.
-const PHOTOCAP_READ_TIMEOUT: Duration = Duration::from_secs(15);
+/// `PhotoCap` takes several seconds on the device (§6); the frame timeout is too short.
+const PHOTOCAP_READ_TIMEOUT: Duration = Duration::from_secs(30);
+/// Idle keep-alive interval (§5.3). The device sends no reply.
+const HEARTBACK_INTERVAL: Duration = Duration::from_secs(5);
 /// Commands waiting for the current frame slot.
 const COMMAND_QUEUE_LEN: usize = 8;
 
@@ -117,6 +119,8 @@ pub enum Event {
     Stats(NetStats),
     /// Full-resolution capture with the 192x256 temperature plane.
     Capture(Box<Capture>),
+    /// PhotoCap was refused (busy or error reply). Retryable; connection is intact.
+    CaptureRejected(String),
     Log(LogLine),
 }
 
@@ -281,6 +285,11 @@ struct Runtime {
     conn: Option<Conn>,
     /// Extended frames (with live plane) seen in this session.
     saw_live_plane: bool,
+    /// Serialise PhotoCap requests; the device rejects concurrent captures.
+    capture_in_flight: bool,
+    last_frame_at: Instant,
+    last_heartbeat: Instant,
+    heartbeat_logged: bool,
     /// Consecutive failures; logged to make a desynchronised link obvious.
     consecutive_failures: u32,
 }
@@ -316,6 +325,10 @@ impl Runtime {
             stats: StatsAcc::new(),
             conn: None,
             saw_live_plane: false,
+            capture_in_flight: false,
+            last_frame_at: Instant::now(),
+            last_heartbeat: Instant::now(),
+            heartbeat_logged: false,
             consecutive_failures: 0,
         }
     }
@@ -351,6 +364,15 @@ impl Runtime {
 
             if let Some(command) = self.pending.pop_front() {
                 self.run_command(command);
+                continue;
+            }
+
+            // Keep the session alive if no frame has moved for a while (§5.3).
+            if !self.capture_in_flight
+                && self.last_frame_at.elapsed() >= HEARTBACK_INTERVAL
+                && self.last_heartbeat.elapsed() >= HEARTBACK_INTERVAL
+            {
+                self.send_heartback();
                 continue;
             }
 
@@ -442,6 +464,12 @@ impl Runtime {
                     );
                     return;
                 }
+                if command == Command::PhotoCap && self.capture_in_flight {
+                    let detail = "PhotoCap already running; request not sent".to_owned();
+                    self.log(Level::Warn, detail.clone());
+                    let _ = self.tx.send(Event::CaptureRejected(detail));
+                    return;
+                }
                 if self.pending.len() >= COMMAND_QUEUE_LEN {
                     self.log(
                         Level::Warn,
@@ -524,6 +552,9 @@ impl Runtime {
                     self.backoff = 0;
                     self.consecutive_failures = 0;
                     conn.next_frame_at = Instant::now() + config.frame_interval();
+                    self.last_frame_at = Instant::now();
+                    self.last_heartbeat = Instant::now();
+                    self.heartbeat_logged = false;
                     self.conn = Some(conn);
                     self.set_state(
                         ConnState::Streaming,
@@ -593,12 +624,20 @@ impl Runtime {
             let _ = conn.stream.set_read_timeout(Some(PHOTOCAP_READ_TIMEOUT));
         }
 
+        if matches!(command, Command::PhotoCap) {
+            self.capture_in_flight = true;
+        }
         let started = Instant::now();
         let result = match conn
             .stream
             .write_all(wire.as_bytes())
             .and_then(|()| conn.stream.flush())
         {
+            Ok(()) if matches!(command, Command::PhotoCap) => {
+                // Read the whole message even when the token is an error/busy reply,
+                // so the stream stays framed and the connection can be kept.
+                protocol::read_message(&mut conn.reader, None).map(Some)
+            }
             Ok(()) if command.expects_reply() => {
                 protocol::read_message(&mut conn.reader, command.expected_token()).map(Some)
             }
@@ -611,7 +650,13 @@ impl Runtime {
             let _ = conn.stream.set_read_timeout(Some(read_timeout));
         }
 
+        if matches!(command, Command::PhotoCap) {
+            self.capture_in_flight = false;
+        }
         match result {
+            Ok(Some(message)) if matches!(command, Command::PhotoCap) => {
+                self.handle_photocap(&message, elapsed);
+            }
             Ok(Some(message)) => self.handle_reply(command, &message, elapsed),
             Ok(None) => self.log(
                 Level::Info,
@@ -664,30 +709,11 @@ impl Runtime {
                     self.schedule_retry(reason);
                 }
             }
-            Command::PhotoCap => match Capture::parse(&message.payload) {
-                Ok(capture) => {
-                    let stats = capture.stats();
-                    self.log(
-                        Level::Info,
-                        format!(
-                            "PhotoCap {} ({} ms): shot {} B, temp plane 192x256 \
-                             {:.2}..{:.2} °C (mean {:.2}), vis {} B, y16 {} B, tail 8 B",
-                            message.summary(),
-                            elapsed.as_millis(),
-                            capture.shot_jpeg.len(),
-                            stats.min,
-                            stats.max,
-                            stats.mean,
-                            capture.vis_jpeg.len(),
-                            capture.y16.len()
-                        ),
-                    );
-                    let _ = self.tx.send(Event::Capture(Box::new(capture)));
-                }
-                Err(err) => self.log(Level::Error, format!("PhotoCap payload rejected: {err}")),
-            },
-            Command::ColorChange(_) | Command::MeasureUnit(_) => {
+            Command::ColorChange(_) | Command::MeasureUnit(_) | Command::HeartBack => {
                 debug_assert!(!command.expects_reply());
+            }
+            Command::PhotoCap => {
+                debug_assert!(false, "PhotoCap is handled by handle_photocap");
             }
         }
     }
@@ -709,6 +735,7 @@ impl Runtime {
         }
 
         self.seq = self.seq.wrapping_add(1);
+        self.last_frame_at = Instant::now();
         let frame = Arc::new(LiveFrame::decode(
             parsed.yuv,
             parsed.key_c,
@@ -721,6 +748,67 @@ impl Runtime {
         self.stats.record(rtt, length);
         self.consecutive_failures = 0;
         Ok(())
+    }
+
+    fn handle_photocap(&mut self, message: &protocol::Message, elapsed: Duration) {
+        if message.token != crate::protocol::TOKEN_PHOTOCAP {
+            let detail = format!(
+                "PhotoCap rejected by camera: token {:?}, {} B payload{}",
+                message.token,
+                message.payload.len(),
+                summarize_payload(&message.payload)
+            );
+            self.log(Level::Warn, detail.clone());
+            let _ = self.tx.send(Event::CaptureRejected(detail));
+            return;
+        }
+        match Capture::parse(&message.payload) {
+            Ok(capture) => {
+                let stats = capture.stats();
+                self.log(
+                    Level::Info,
+                    format!(
+                        "PhotoCap {} ({} ms): shot {} B, temp plane 192x256 \
+                         {:.2}..{:.2} °C (mean {:.2}), vis {} B, y16 {} B, tail 8 B",
+                        message.summary(),
+                        elapsed.as_millis(),
+                        capture.shot_jpeg.len(),
+                        stats.min,
+                        stats.max,
+                        stats.mean,
+                        capture.vis_jpeg.len(),
+                        capture.y16.len()
+                    ),
+                );
+                let _ = self.tx.send(Event::Capture(Box::new(capture)));
+            }
+            Err(err) => {
+                let detail = format!("PhotoCap payload rejected by client: {err}");
+                self.log(Level::Warn, detail.clone());
+                let _ = self.tx.send(Event::CaptureRejected(detail));
+            }
+        }
+    }
+
+    fn send_heartback(&mut self) {
+        let Some(conn) = self.conn.as_mut() else {
+            return;
+        };
+        let wire = crate::protocol::Command::HeartBack.wire();
+        match conn
+            .stream
+            .write_all(wire.as_bytes())
+            .and_then(|()| conn.stream.flush())
+        {
+            Ok(()) => {
+                self.last_heartbeat = Instant::now();
+                if !self.heartbeat_logged {
+                    self.heartbeat_logged = true;
+                    self.log(Level::Info, "idle: sent HeartBack keep-alive".to_owned());
+                }
+            }
+            Err(err) => self.schedule_retry(format!("HeartBack failed: {err}")),
+        }
     }
 
     // -- teardown -----------------------------------------------------------
@@ -755,6 +843,7 @@ impl Runtime {
 
     fn disconnect(&mut self) {
         self.conn = None;
+        self.capture_in_flight = false;
         if let Ok(mut slot) = self.socket_slot.lock()
             && let Some(stream) = slot.take()
         {
@@ -774,6 +863,26 @@ impl Runtime {
 
     fn log(&self, level: Level, text: String) {
         let _ = self.tx.send(Event::Log(LogLine { level, text }));
+    }
+}
+
+fn summarize_payload(payload: &[u8]) -> String {
+    let text: String = payload
+        .iter()
+        .take(120)
+        .map(|&byte| {
+            if byte.is_ascii_graphic() || byte == b' ' {
+                char::from(byte)
+            } else {
+                '.'
+            }
+        })
+        .collect();
+    let trimmed = text.trim_matches('.').trim();
+    if trimmed.is_empty() {
+        String::new()
+    } else {
+        format!(": {trimmed}")
     }
 }
 
@@ -843,6 +952,14 @@ mod tests {
 
     impl FakeCamera {
         fn spawn(frames_before_drop: usize) -> Self {
+            Self::spawn_with(frames_before_drop, false)
+        }
+
+        fn spawn_busy(frames_before_drop: usize) -> Self {
+            Self::spawn_with(frames_before_drop, true)
+        }
+
+        fn spawn_with(frames_before_drop: usize, capture_busy: bool) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake camera");
             let addr = listener.local_addr().expect("local addr");
             let stop = Arc::new(AtomicBool::new(false));
@@ -855,7 +972,9 @@ mod tests {
                         };
                         let _ = socket.set_nodelay(true);
                         let _ = socket.set_read_timeout(Some(Duration::from_millis(100)));
-                        if serve_connection(&mut socket, &stop, frames_before_drop).is_none() {
+                        if serve_connection(&mut socket, &stop, frames_before_drop, capture_busy)
+                            .is_none()
+                        {
                             return;
                         }
                     }
@@ -937,6 +1056,7 @@ mod tests {
         socket: &mut TcpStream,
         stop: &AtomicBool,
         frames_before_drop: usize,
+        capture_busy: bool,
     ) -> Option<()> {
         let mut buffer: Vec<u8> = Vec::new();
         let mut chunk = [0u8; 256];
@@ -963,7 +1083,13 @@ mod tests {
             while let Some(request) = take_request(&mut buffer) {
                 let reply = match request {
                     Request::Init => fixtures::init_message(),
-                    Request::PhotoCap => fixtures::photocap_message(),
+                    Request::PhotoCap => {
+                        if capture_busy {
+                            protocol::encode_message("{UTi_busy}", b"PhotoCap busy")
+                        } else {
+                            fixtures::photocap_message()
+                        }
+                    }
                     Request::NoReply => continue,
                     Request::VFrame => {
                         frames += 1;
@@ -1134,6 +1260,73 @@ mod tests {
         assert!(saw_plane, "no extended frame with a live plane");
         assert!(!saw_reconnect, "extended frames must not force reconnects");
         assert_eq!(inits, 1, "init should run once, ran {inits} times");
+
+        worker.stop();
+    }
+
+    #[test]
+    fn photo_cap_busy_is_retryable_without_reconnect() {
+        let camera = FakeCamera::spawn_busy(usize::MAX);
+        let worker = start_worker(&camera, 60);
+
+        let deadline = Instant::now() + Duration::from_secs(4);
+        while Instant::now() < deadline && worker.latest_frame().is_none() {
+            thread::sleep(Duration::from_millis(10));
+        }
+        let seq_before = worker.latest_frame().map(|frame| frame.seq).unwrap_or(0);
+        worker.run(Command::PhotoCap);
+
+        let deadline = Instant::now() + Duration::from_secs(4);
+        let mut rejected = None;
+        let mut reconnected = false;
+        let mut seq_after = seq_before;
+        while Instant::now() < deadline && rejected.is_none() {
+            for event in worker.try_events() {
+                match event {
+                    Event::CaptureRejected(detail) => rejected = Some(detail),
+                    Event::State {
+                        state: ConnState::Reconnecting,
+                        ..
+                    } => reconnected = true,
+                    _ => {}
+                }
+            }
+            if let Some(frame) = worker.latest_frame() {
+                seq_after = seq_after.max(frame.seq);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let detail = rejected.expect("busy reply should surface as CaptureRejected");
+        assert!(
+            detail.contains("busy") || detail.contains("PhotoCap"),
+            "{detail}"
+        );
+
+        // The rejection event can arrive before the next frame; allow the loop
+        // to produce one and re-check that the connection stayed up.
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline && seq_after <= seq_before {
+            for event in worker.try_events() {
+                if let Event::State {
+                    state: ConnState::Reconnecting,
+                    ..
+                } = event
+                {
+                    reconnected = true;
+                }
+            }
+            if let Some(frame) = worker.latest_frame() {
+                seq_after = seq_after.max(frame.seq);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(!reconnected, "busy PhotoCap must not drop the connection");
+        assert!(
+            seq_after > seq_before,
+            "frame loop must continue after a busy reply"
+        );
 
         worker.stop();
     }
