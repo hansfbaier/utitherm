@@ -6,21 +6,12 @@
 //! `PhotoCap` path (192x256 f32 plane); commands are a typed whitelist because
 //! malformed arguments kill the device daemon.
 
-mod app;
-mod capture;
-mod config;
-mod fixtures;
-mod frame;
-mod net;
-mod protocol;
-mod replay;
-mod yuv;
-
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use config::{CameraAddr, Config};
+use uti260b_viewer::config::{CameraAddr, Config};
+use uti260b_viewer::{app, capture, fixtures};
 
 const USAGE: &str = "\
 uti260b-viewer — UTi260B+ thermal imager live viewer (TCP 9527)

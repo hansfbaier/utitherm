@@ -18,18 +18,13 @@ use crate::capture::{self, Capture, TempStats};
 use crate::config::Config;
 use crate::frame::LiveFrame;
 use crate::net::{ConnState, Event, Level, NetStats, StreamConfig, Worker};
-use crate::protocol::{
-    self, Command, FRAME_H, FRAME_W, InitReply, PALETTE_SIGNATURES, Palette, UnitCommand,
-};
+use crate::palette::{PALETTE_MATCH_DISTANCE, equivalent, frame_signature, nearest_palette};
+use crate::protocol::{self, Command, FRAME_H, FRAME_W, InitReply, Palette, UnitCommand};
 use crate::replay::ReplayWorker;
 
 const LOG_CAPACITY: usize = 400;
 const TOAST_SECS: f32 = 6.0;
 const NO_FRAME: &str = "—";
-/// Euclidean distance in (mean R, G, B, saturation) still counted as a match
-/// against the palette reference signatures (§3.1). Generous: the OSD is included.
-const PALETTE_MATCH_DISTANCE: f32 = 45.0;
-
 /// Where frames come from. Chosen at startup; replay mode never opens a socket.
 #[derive(Clone, Debug)]
 pub enum Mode {
@@ -402,12 +397,7 @@ impl CameraApp {
         let Some(requested) = self.palette_requested else {
             return;
         };
-        let equivalent = detected == requested
-            || matches!(
-                (requested, detected),
-                (Palette::P0, Palette::P1) | (Palette::P1, Palette::P0)
-            );
-        if distance <= PALETTE_MATCH_DISTANCE && equivalent {
+        if distance <= PALETTE_MATCH_DISTANCE && equivalent(requested, detected) {
             self.push_log(
                 Level::Info,
                 format!(
@@ -1393,53 +1383,6 @@ fn hex_string(bytes: &[u8]) -> String {
         .join(" ")
 }
 
-/// Mean R, G, B and mean saturation (max-min channel) of a decoded frame.
-fn frame_signature(rgba: &[u8]) -> (f32, f32, f32, f32) {
-    let mut sum_r = 0.0f64;
-    let mut sum_g = 0.0f64;
-    let mut sum_b = 0.0f64;
-    let mut sum_sat = 0.0f64;
-    let pixels = rgba.len() / 4;
-    if pixels == 0 {
-        return (0.0, 0.0, 0.0, 0.0);
-    }
-    for pixel in rgba.as_chunks::<4>().0 {
-        let (r, g, b) = (pixel[0], pixel[1], pixel[2]);
-        sum_r += f64::from(r);
-        sum_g += f64::from(g);
-        sum_b += f64::from(b);
-        let max = r.max(g).max(b);
-        let min = r.min(g).min(b);
-        sum_sat += f64::from(max - min);
-    }
-    let n = pixels as f64;
-    (
-        (sum_r / n) as f32,
-        (sum_g / n) as f32,
-        (sum_b / n) as f32,
-        (sum_sat / n) as f32,
-    )
-}
-
-/// Nearest reference palette signature (§3.1) and its Euclidean distance.
-fn nearest_palette((r, g, b, sat): (f32, f32, f32, f32)) -> (Palette, f32) {
-    let mut best = (Palette::P0, f32::INFINITY);
-    for (index, signature) in PALETTE_SIGNATURES.iter().enumerate() {
-        let dr = r - signature.0;
-        let dg = g - signature.1;
-        let db = b - signature.2;
-        let ds = sat - signature.3;
-        let distance = (dr * dr + dg * dg + db * db + ds * ds).sqrt();
-        if distance < best.1 {
-            best = (
-                Palette::from_index(index as u8).expect("index within whitelist"),
-                distance,
-            );
-        }
-    }
-    best
-}
-
 fn write_exports(
     out_dir: &std::path::Path,
     frame: &LiveFrame,
@@ -1514,19 +1457,5 @@ mod tests {
         assert!(frame.key(0).is_none());
         frame.key_c = [1.0, 2.0, 3.0];
         assert_eq!(frame.key(1), Some(2.0));
-    }
-
-    #[test]
-    fn gray_frame_matches_the_grey_palette() {
-        let rgba: Vec<u8> = [136u8, 136, 135, 255]
-            .iter()
-            .copied()
-            .cycle()
-            .take(FRAME_W * FRAME_H * 4)
-            .collect();
-        let signature = frame_signature(&rgba);
-        let (palette, distance) = nearest_palette(signature);
-        assert_eq!(palette, Palette::P3, "signature {signature:?}");
-        assert!(distance < 10.0, "distance {distance}");
     }
 }
