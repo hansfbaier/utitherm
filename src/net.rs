@@ -565,9 +565,13 @@ impl Runtime {
         }
 
         if let Some(conn) = self.conn.as_mut() {
-            // Pace from now, not from the request start, so a slow reply cannot
-            // make the loop burst to catch up.
-            conn.next_frame_at = Instant::now() + config.frame_interval();
+            // Schedule from the request start: with one outstanding request this
+            // reaches the target rate when RTT < interval, and degrades to the
+            // RTT-bound rate when the device is slower. Never burst to catch up.
+            conn.next_frame_at = started + config.frame_interval();
+            if conn.next_frame_at < Instant::now() {
+                conn.next_frame_at = Instant::now();
+            }
         }
 
         if self.stats.last_emit.elapsed() >= STATS_INTERVAL {
