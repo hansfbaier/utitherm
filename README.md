@@ -3,7 +3,15 @@
 Independent Rust client for the UNI-T **UTi260B+** thermal imager — egui GUI
 plus an automation CLI — implemented from
 [`UTi260B-plus-protocol-spec.md`](UTi260B-plus-protocol-spec.md).
-No vendor code, libraries, credentials or fixed IP addresses are involved.
+No vendor code or libraries are used. The client needs no account or credential;
+the device-default access notes are documented separately in
+[`DEVICE-PROFILE.md`](DEVICE-PROFILE.md).
+
+![uti260b-viewer live view](docs/screenshot.png)
+
+*Live view over TCP 9527: palette-mapped thermal image, key temperatures, the
+192×256 measurement plane, USB import panel and device state. The screenshot
+was captured from a real UTi260B+ on firmware 1.1.9 at ~18 fps.*
 
 Related documents: [`UTi-family-protocol-spec.md`](UTi-family-protocol-spec.md)
 generalises the same protocol to the other `UTi_cmdsys` models (UTi720B, UTi165B+,
