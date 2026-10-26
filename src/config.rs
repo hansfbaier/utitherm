@@ -14,12 +14,17 @@
 //! connect_timeout_ms = 2000
 //! read_timeout_ms = 2000
 //! target_fps = 20
+//!
+//! [usb]
+//! marker = "UNIT UTi260B+"
 //! ```
 
 use std::fmt;
 use std::fs;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
+
+use crate::usb::USB_AUTORUN_MARKER;
 
 pub const DEFAULT_PORT: u16 = 9527;
 pub const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 2000;
@@ -50,6 +55,9 @@ pub struct Config {
     pub read_timeout_ms: u64,
     pub target_fps: u32,
     pub out_dir: PathBuf,
+    /// `AUTORUN.INF` content used to recognise a camera volume (§11.6).
+    /// Configurable because other models may carry a different marker (§13.7).
+    pub usb_marker: String,
     /// Config file actually loaded, if any.
     pub source: Option<PathBuf>,
 }
@@ -63,6 +71,7 @@ impl Default for Config {
             read_timeout_ms: DEFAULT_READ_TIMEOUT_MS,
             target_fps: DEFAULT_TARGET_FPS,
             out_dir: PathBuf::from("captures"),
+            usb_marker: USB_AUTORUN_MARKER.to_owned(),
             source: None,
         }
     }
@@ -162,7 +171,18 @@ impl Config {
                     )),
                 },
                 ("camera", "out_dir") => config.out_dir = PathBuf::from(value),
-                ("", _) | ("camera", _) => warnings.push(format!(
+                ("usb", "marker") | ("usb", "autorun_marker") => {
+                    if value.is_empty() {
+                        warnings.push(format!(
+                            "{}:{}: usb marker must not be empty",
+                            path.display(),
+                            lineno + 1
+                        ));
+                    } else {
+                        config.usb_marker = value.to_owned();
+                    }
+                }
+                ("", _) | ("camera", _) | ("usb", _) => warnings.push(format!(
                     "{}:{}: unknown key {key:?} in section {section:?}",
                     path.display(),
                     lineno + 1
@@ -307,6 +327,7 @@ mod tests {
         assert_eq!(cfg.connect_timeout_ms, 2000);
         assert_eq!(cfg.read_timeout_ms, 2000);
         assert_eq!(cfg.target_fps, 20);
+        assert_eq!(cfg.usb_marker, USB_AUTORUN_MARKER);
     }
 
     #[test]
@@ -321,7 +342,7 @@ mod tests {
         let mut f = fs::File::create(&path).unwrap();
         writeln!(
             f,
-            "[camera]\nip = \"192.168.27.10\"\nlive_port = 9527\nconnect_timeout_ms = 1500\nread_timeout_ms = 2500\ntarget_fps = 15\n"
+            "[camera]\nip = \"192.168.27.10\"\nlive_port = 9527\nconnect_timeout_ms = 1500\nread_timeout_ms = 2500\ntarget_fps = 15\n[usb]\nmarker = \"label=UNIT UTi720B\"\n"
         )
         .unwrap();
         drop(f);
@@ -335,6 +356,7 @@ mod tests {
         assert_eq!(cfg.connect_timeout_ms, 1500);
         assert_eq!(cfg.read_timeout_ms, 2500);
         assert_eq!(cfg.target_fps, 15);
+        assert_eq!(cfg.usb_marker, "label=UNIT UTi720B");
         assert_eq!(cfg.resolve_ip().unwrap().to_string(), "192.168.27.10");
         let _ = fs::remove_dir_all(&dir);
     }

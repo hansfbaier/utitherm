@@ -8,3 +8,8 @@ connect_timeout_ms = 2000
 read_timeout_ms = 2000
 target_fps = 20
 out_dir = "captures"
+
+# AUTORUN.INF marker used to recognise the camera's USB volume. Change this
+# for another model whose label differs.
+[usb]
+marker = "UNIT UTi260B+"

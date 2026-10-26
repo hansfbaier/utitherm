@@ -12,4 +12,6 @@ pub mod net;
 pub mod palette;
 pub mod protocol;
 pub mod replay;
+pub mod usb;
+pub mod usb_worker;
 pub mod yuv;
