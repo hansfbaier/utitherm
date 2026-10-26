@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use crate::capture::{self, Capture, TempStats};
 use crate::config::Config;
-use crate::frame::LiveFrame;
+use crate::frame::{FfcDetector, LiveFrame};
 use crate::net::{ConnState, Event, Level, NetStats, StreamConfig, Worker};
 use crate::palette::{PALETTE_MATCH_DISTANCE, equivalent, frame_signature, nearest_palette};
 use crate::protocol::{self, Command, FRAME_H, FRAME_W, InitReply, Palette, UnitCommand};
@@ -143,6 +143,11 @@ pub struct CameraApp {
     usb_paused: bool,
     capture_pending: bool,
     capture_pending_since: Option<Instant>,
+    capture_available: bool,
+    ffc: FfcDetector,
+    ffc_guard_frames: u8,
+    ffc_epoch: u32,
+    ffc_status: Option<String>,
     sample: Option<Sample>,
 
     palette_requested: Option<Palette>,
@@ -221,6 +226,11 @@ impl CameraApp {
             usb_paused: false,
             capture_pending: false,
             capture_pending_since: None,
+            capture_available: true,
+            ffc: FfcDetector::default(),
+            ffc_guard_frames: 0,
+            ffc_epoch: 0,
+            ffc_status: None,
             sample: None,
             palette_requested: None,
             palette_detected: None,
@@ -313,27 +323,23 @@ impl CameraApp {
                         ),
                     );
                     if let Some(requested) = self.unit_requested.take() {
-                        let expected = match requested {
-                            UnitCommand::Celsius => 0,
-                            UnitCommand::Unit4 => 4,
-                            UnitCommand::Kelvin => 6,
-                        };
                         self.unit_pending = false;
-                        if reply.unit == expected {
+                        if requested.matches_byte(reply.unit) {
                             self.push_log(
                                 Level::Info,
                                 format!(
-                                    "unit confirmed after {:?}: {}",
+                                    "unit field confirmed after {:?}: {} (byte {})",
                                     requested,
-                                    reply.unit_label()
+                                    reply.unit_label(),
+                                    reply.unit
                                 ),
                             );
                         } else {
                             let msg = format!(
-                                "unit change failed: requested {:?} (unit {}), device reports {}",
+                                "unit field not confirmed: requested {:?}, device reports {} (byte {})",
                                 requested,
-                                expected,
-                                reply.unit_label()
+                                reply.unit_label(),
+                                reply.unit
                             );
                             self.push_log(Level::Error, msg.clone());
                             self.toast(msg, true);
@@ -346,6 +352,13 @@ impl CameraApp {
                     self.capture_pending = false;
                     self.capture_pending_since = None;
                     self.push_log(Level::Warn, detail.clone());
+                    self.toast(detail, true);
+                }
+                Event::CaptureUnavailable(detail) => {
+                    self.capture_pending = false;
+                    self.capture_pending_since = None;
+                    self.capture_available = false;
+                    self.push_log(Level::Error, detail.clone());
                     self.toast(detail, true);
                 }
                 Event::Capture(capture) => {
@@ -376,11 +389,12 @@ impl CameraApp {
         if self.capture_pending
             && self
                 .capture_pending_since
-                .is_some_and(|since| since.elapsed() > Duration::from_secs(20))
+                .is_some_and(|since| since.elapsed() > Duration::from_secs(35))
         {
             self.capture_pending = false;
             self.capture_pending_since = None;
-            let msg = "PhotoCap timed out or was rejected; see the log";
+            self.capture_available = false;
+            let msg = "PhotoCap timed out; capture disabled, restart the camera application";
             self.push_log(Level::Error, msg.to_owned());
             self.toast(msg, true);
         }
@@ -396,7 +410,24 @@ impl CameraApp {
                 if frame.key_c.iter().any(|value| value.is_finite()) {
                     self.last_keys = Some(frame.key_c);
                 }
-                if let Some(plane) = &frame.plane_c {
+                if self.ffc.observe(&frame) {
+                    self.ffc_epoch = self.ffc_epoch.wrapping_add(1);
+                    self.ffc_guard_frames = 2;
+                    self.live_plane = None;
+                    self.live_plane_stats = None;
+                    self.sample = None;
+                    let msg = format!(
+                        "flat-field correction boundary detected; measurement baseline reset (epoch {})",
+                        self.ffc_epoch
+                    );
+                    self.ffc_status = Some(msg.clone());
+                    self.push_log(Level::Warn, msg);
+                }
+                let guarded = self.ffc_guard_frames > 0;
+                if guarded {
+                    self.ffc_guard_frames -= 1;
+                }
+                if !guarded && let Some(plane) = &frame.plane_c {
                     self.live_plane_stats = capture::plane_stats(plane);
                     self.live_plane = Some(Arc::new(plane.clone()));
                 }
@@ -603,7 +634,7 @@ impl CameraApp {
                 self.capture_pending = true;
                 self.capture_pending_since = Some(Instant::now());
             }
-            Command::Init | Command::VFrame | Command::HeartBack => {}
+            Command::Init | Command::VFrame | Command::HeartBack | Command::Shutter => {}
         }
 
         self.push_log(Level::Info, format!("→ {}", command.describe()));
@@ -685,10 +716,6 @@ impl CameraApp {
 
     fn toast(&mut self, text: impl Into<String>, error: bool) {
         self.toast = Some((text.into(), Instant::now(), error));
-    }
-
-    fn unit_symbol(&self) -> Option<&'static str> {
-        self.init.as_ref().and_then(|init| init.unit_symbol())
     }
 
     fn palette_status(&self) -> String {
@@ -863,7 +890,8 @@ impl CameraApp {
 
     fn key_temps(&mut self, ui: &mut egui::Ui) {
         ui.heading("Key temperatures");
-        let symbol = self.unit_symbol();
+        let init = self.init.as_ref();
+        let symbol = init.and_then(|init| init.unit_symbol()).unwrap_or("?");
         egui::Grid::new("key-temps")
             .num_columns(2)
             .spacing([16.0, 4.0])
@@ -873,8 +901,8 @@ impl CameraApp {
                     let value = self.last_frame.as_ref().and_then(|frame| frame.key(index));
                     match value {
                         Some(v) => {
-                            let suffix = symbol.unwrap_or("?");
-                            ui.monospace(format!("{v:7.2} {suffix}"));
+                            let shown = init.map(|init| init.display_temperature_c(v)).unwrap_or(v);
+                            ui.monospace(format!("{shown:7.2} {symbol}"));
                         }
                         None => {
                             ui.monospace(NO_FRAME);
@@ -883,20 +911,23 @@ impl CameraApp {
                     ui.end_row();
                 }
             });
-        if symbol.is_none() && self.init.is_some() {
+        if symbol == "?" && self.init.is_some() {
             ui.colored_label(
                 egui::Color32::from_rgb(240, 200, 90),
                 "unit cannot be trusted (spec §3.2)",
             );
         }
         ui.small(
-            "Unlabelled header readings: not max/min/centre of the measurement plane \
-             and their source region is unknown (spec §5.2, E4).",
+            "Wire values are Celsius; shown in the unit selected by bit 1 of the init byte. \
+             Their source region is unknown (spec §5.2, E4).",
         );
     }
 
     fn measurement_panel(&mut self, ui: &mut egui::Ui) {
         ui.heading("Measurement");
+        if let Some(status) = &self.ffc_status {
+            ui.colored_label(egui::Color32::from_rgb(240, 200, 90), status);
+        }
         let Some(capture) = self.capture.clone() else {
             if self.usb_plane.is_some() {
                 self.usb_measurement_panel(ui);
@@ -1255,7 +1286,7 @@ impl CameraApp {
 
         let marks = init.mark_flags;
         let mark = |bit: u32| if marks & (1 << bit) != 0 { "on" } else { "off" };
-        let (scale_a, scale_b) = init.color_scale_floats();
+        let scale = init.color_scale_fields();
         let palette = self.palette_status();
 
         let symbol = init.unit_symbol().unwrap_or("?");
@@ -1315,10 +1346,36 @@ impl CameraApp {
             ),
         );
         row(ui, "fusion level [I]", &format!("{:.2}", init.fusion_level));
+        row(ui, "palette reported", &format!("+{}", scale.palette));
         row(
             ui,
-            "colour scale [U]",
-            &format!("f32@+8 {scale_a:.2} · +12 {scale_b:.2}"),
+            "scale mode [I]",
+            &format!(
+                "{} ({})",
+                scale.mode,
+                match scale.mode {
+                    0 => "auto",
+                    1 => "ratio/span",
+                    2 => "down",
+                    3 => "up",
+                    4 => "section",
+                    5 => "menu",
+                    _ => "unknown",
+                }
+            ),
+        );
+        row(
+            ui,
+            "auto bounds",
+            &format!("{:.2} … {:.2} °C", scale.auto_lower_c, scale.auto_upper_c),
+        );
+        row(
+            ui,
+            "manual bounds [I]",
+            &format!(
+                "{:.2} … {:.2} °C",
+                scale.manual_lower_c, scale.manual_upper_c
+            ),
         );
         row(
             ui,
@@ -1369,7 +1426,9 @@ impl CameraApp {
              arguments are exposed here.",
         );
 
-        let can_send = self.state == ConnState::Streaming && matches!(self.mode, Mode::Live);
+        let can_send = self.state == ConnState::Streaming
+            && matches!(self.mode, Mode::Live)
+            && !self.capture_pending;
         ui.horizontal(|ui| {
             if ui
                 .add_enabled(can_send, egui::Button::new("Refresh init"))
@@ -1379,8 +1438,10 @@ impl CameraApp {
                 self.run_command(Command::Init);
             }
 
-            let capture_enabled = !self.capture_pending && can_send;
-            let capture_label = if self.capture_pending {
+            let capture_enabled = self.capture_available && !self.capture_pending && can_send;
+            let capture_label = if !self.capture_available {
+                "PhotoCap unavailable"
+            } else if self.capture_pending {
                 "Capturing…"
             } else {
                 "PhotoCap…"
@@ -1393,7 +1454,7 @@ impl CameraApp {
                 )
                 .clicked()
             {
-                self.toast("PhotoCap requested (~3 s)", false);
+                self.toast("PhotoCap requested (several seconds)", false);
                 self.run_command(Command::PhotoCap);
             }
         });

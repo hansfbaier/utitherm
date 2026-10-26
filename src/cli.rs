@@ -81,6 +81,8 @@ enum CommandLine {
     Palette(PaletteArgs),
     /// Change the temperature unit and confirm with a fresh init
     Unit(UnitArgs),
+    /// Request a manual flat-field correction / shutter
+    Shutter,
     /// Stream one JSON object (or line) per live frame
     Watch(WatchArgs),
     /// Import radiometric files from a read-only USB volume
@@ -192,25 +194,23 @@ struct PaletteArgs {
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum UnitArg {
     Celsius,
-    Unit4,
     Kelvin,
+    Flag2Clear,
+    Flag2Set,
 }
 
 impl UnitArg {
     fn command(self) -> UnitCommand {
         match self {
             Self::Celsius => UnitCommand::Celsius,
-            Self::Unit4 => UnitCommand::Unit4,
             Self::Kelvin => UnitCommand::Kelvin,
+            Self::Flag2Clear => UnitCommand::Flag2Clear,
+            Self::Flag2Set => UnitCommand::Flag2Set,
         }
     }
 
-    fn expected_byte(self) -> u32 {
-        match self {
-            Self::Celsius => 0,
-            Self::Unit4 => 4,
-            Self::Kelvin => 6,
-        }
+    fn label(self) -> &'static str {
+        self.command().label()
     }
 }
 
@@ -259,6 +259,7 @@ fn run_inner(cli: &Cli) -> Result<i32, String> {
         CommandLine::Measure(args) => cmd_measure(cli, args),
         CommandLine::Palette(args) => cmd_palette(cli, args),
         CommandLine::Unit(args) => cmd_unit(cli, args),
+        CommandLine::Shutter => cmd_shutter(cli),
         CommandLine::Watch(args) => cmd_watch(cli, args),
         CommandLine::Import(args) => cmd_import(cli, args),
     }
@@ -275,6 +276,7 @@ struct Camera {
     init_seq: u64,
     capture_seq: u64,
     capture_rejected: Option<String>,
+    capture_unavailable: Option<String>,
     last_capture: Option<Capture>,
     last_seq: u64,
     stats: NetStats,
@@ -338,6 +340,7 @@ impl Camera {
             init_seq: 0,
             capture_seq: 0,
             capture_rejected: None,
+            capture_unavailable: None,
             last_capture: None,
             last_seq: 0,
             stats: NetStats::default(),
@@ -385,6 +388,9 @@ impl Camera {
                 }
                 Event::CaptureRejected(detail) => {
                     self.capture_rejected = Some(detail);
+                }
+                Event::CaptureUnavailable(detail) => {
+                    self.capture_unavailable = Some(detail);
                 }
             }
         }
@@ -476,10 +482,14 @@ impl Camera {
         self.ensure_streaming()?;
         let mark = self.capture_seq;
         self.capture_rejected = None;
+        self.capture_unavailable = None;
         self.worker.run(Command::PhotoCap);
         let deadline = Instant::now() + timeout;
         loop {
             self.pump();
+            if let Some(reason) = self.capture_unavailable.take() {
+                return Err(format!("capture unavailable: {reason}"));
+            }
             if let Some(reason) = self.capture_rejected.take() {
                 return Err(format!("retryable: {reason}"));
             }
@@ -795,13 +805,13 @@ fn cmd_unit(cli: &Cli, args: &UnitArgs) -> Result<i32, String> {
     camera.send(Command::Init)?;
     let init = camera.wait_init_after(mark, camera.timeout)?;
 
-    let expected = args.unit.expected_byte();
-    let confirmed = init.unit == expected;
+    let confirmed = command.matches_byte(init.unit);
     let value = json!({
-        "requested": format!("{:?}", args.unit).to_lowercase(),
-        "expected_unit_byte": expected,
+        "requested": args.unit.label(),
         "reported_unit_byte": init.unit,
         "reported_unit": init.unit_label(),
+        "kelvin": init.is_kelvin(),
+        "secondary_flag": init.secondary_flag(),
         "confirmed": confirmed,
     });
     emit(cli.json, value.clone(), || print_unit(&value));
@@ -810,9 +820,24 @@ fn cmd_unit(cli: &Cli, args: &UnitArgs) -> Result<i32, String> {
             "device reports unit byte {} ({}) after requesting {}",
             init.unit,
             init.unit_label(),
-            args.unit.expected_byte()
+            args.unit.label()
         ));
     }
+    Ok(0)
+}
+
+fn cmd_shutter(cli: &Cli) -> Result<i32, String> {
+    let mut camera = Camera::open(cli)?;
+    camera.send(Command::Shutter)?;
+    let value = json!({
+        "command": Command::Shutter.wire(),
+        "reply": "none",
+        "note": "flat-field correction requested; measurement baseline resets when the temperature step is detected",
+    });
+    emit(cli.json, value.clone(), || {
+        println!("FFC requested: {}", Command::Shutter.wire());
+        println!("No reply is expected; watch the key temperatures for the FFC step.");
+    });
     Ok(0)
 }
 
@@ -1031,6 +1056,16 @@ fn print_info(init: &InitReply) {
     println!("ambient: {:.2} ({})", init.ambient_c, init.unit_label());
     println!("humidity_pct: {}", init.humidity_pct);
     println!("unit: {} (byte {})", init.unit_label(), init.unit);
+    let scale = init.color_scale_fields();
+    println!(
+        "colour scale: palette +{}, mode {}, auto {:.2}…{:.2} °C, manual {:.2}…{:.2} °C",
+        scale.palette,
+        scale.mode,
+        scale.auto_lower_c,
+        scale.auto_upper_c,
+        scale.manual_lower_c,
+        scale.manual_upper_c
+    );
     println!("image_select: {}", init.image_select);
     println!("fusion_level: {:.2}", init.fusion_level);
 }
@@ -1111,7 +1146,12 @@ fn info_json(init: &InitReply) -> Value {
         "ambient2": init.ambient2_c,
         "humidity_pct": init.humidity_pct,
         "ambient_int": init.ambient_int_c,
-        "unit": {"byte": init.unit, "label": init.unit_label()},
+        "unit": {
+            "byte": init.unit,
+            "label": init.unit_label(),
+            "kelvin": init.is_kelvin(),
+            "secondary_flag": init.secondary_flag(),
+        },
         "image_select": init.image_select,
         "fusion_level": init.fusion_level,
         "pip_rect": init.pip_rect,
@@ -1125,7 +1165,15 @@ fn info_json(init: &InitReply) -> Value {
         "other_info": init.other_info,
         "laser_px": init.laser_px,
         "fuse_xy": init.fuse_xy,
-        "colour_scale": hex_string(&init.color_scale),
+        "colour_scale": {
+            "palette": init.color_scale_fields().palette,
+            "mode": init.color_scale_fields().mode,
+            "auto_upper_c": init.color_scale_fields().auto_upper_c,
+            "auto_lower_c": init.color_scale_fields().auto_lower_c,
+            "manual_upper_c": init.color_scale_fields().manual_upper_c,
+            "manual_lower_c": init.color_scale_fields().manual_lower_c,
+        },
+        "colour_scale_raw": hex_string(&init.color_scale),
     })
 }
 

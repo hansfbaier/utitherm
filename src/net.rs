@@ -119,8 +119,11 @@ pub enum Event {
     Stats(NetStats),
     /// Full-resolution capture with the 192x256 temperature plane.
     Capture(Box<Capture>),
-    /// PhotoCap was refused (busy or error reply). Retryable; connection is intact.
+    /// PhotoCap was refused by an unexpected reply; retry may be possible.
     CaptureRejected(String),
+    /// The capture engine answered with the 17-byte empty reply or timed out.
+    /// The device needs its application restarted; keep streaming, disable capture.
+    CaptureUnavailable(String),
     Log(LogLine),
 }
 
@@ -665,6 +668,14 @@ impl Runtime {
                     command.describe()
                 ),
             ),
+            Err(err) if matches!(command, Command::PhotoCap) => {
+                let detail = format!(
+                    "PhotoCap failed: {err}; capture is disabled until the camera is restarted"
+                );
+                self.log(Level::Error, detail.clone());
+                let _ = self.tx.send(Event::CaptureUnavailable(detail.clone()));
+                self.schedule_retry(detail);
+            }
             Err(err) => self.schedule_retry(format!("{} failed: {err}", command.describe())),
         }
 
@@ -709,7 +720,10 @@ impl Runtime {
                     self.schedule_retry(reason);
                 }
             }
-            Command::ColorChange(_) | Command::MeasureUnit(_) | Command::HeartBack => {
+            Command::ColorChange(_)
+            | Command::MeasureUnit(_)
+            | Command::HeartBack
+            | Command::Shutter => {
                 debug_assert!(!command.expects_reply());
             }
             Command::PhotoCap => {
@@ -751,6 +765,15 @@ impl Runtime {
     }
 
     fn handle_photocap(&mut self, message: &protocol::Message, elapsed: Duration) {
+        // The refusal is a 17-byte `{UTi_Photo}` message with no payload. Check
+        // the length before parsing sections (§6.2).
+        if message.length == 17 && message.payload.is_empty() {
+            let detail = "PhotoCap unavailable: camera returned the empty 17-byte reply;                           restart the camera application before capturing again"
+                .to_owned();
+            self.log(Level::Error, detail.clone());
+            let _ = self.tx.send(Event::CaptureUnavailable(detail));
+            return;
+        }
         if message.token != crate::protocol::TOKEN_PHOTOCAP {
             let detail = format!(
                 "PhotoCap rejected by camera: token {:?}, {} B payload{}",
@@ -1085,7 +1108,7 @@ mod tests {
                     Request::Init => fixtures::init_message(),
                     Request::PhotoCap => {
                         if capture_busy {
-                            protocol::encode_message("{UTi_busy}", b"PhotoCap busy")
+                            protocol::encode_message(protocol::TOKEN_PHOTOCAP, b"")
                         } else {
                             fixtures::photocap_message()
                         }
@@ -1265,7 +1288,7 @@ mod tests {
     }
 
     #[test]
-    fn photo_cap_busy_is_retryable_without_reconnect() {
+    fn photo_cap_empty_reply_disables_capture_without_reconnect() {
         let camera = FakeCamera::spawn_busy(usize::MAX);
         let worker = start_worker(&camera, 60);
 
@@ -1277,13 +1300,13 @@ mod tests {
         worker.run(Command::PhotoCap);
 
         let deadline = Instant::now() + Duration::from_secs(4);
-        let mut rejected = None;
+        let mut unavailable = None;
         let mut reconnected = false;
         let mut seq_after = seq_before;
-        while Instant::now() < deadline && rejected.is_none() {
+        while Instant::now() < deadline && unavailable.is_none() {
             for event in worker.try_events() {
                 match event {
-                    Event::CaptureRejected(detail) => rejected = Some(detail),
+                    Event::CaptureUnavailable(detail) => unavailable = Some(detail),
                     Event::State {
                         state: ConnState::Reconnecting,
                         ..
@@ -1297,9 +1320,9 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
 
-        let detail = rejected.expect("busy reply should surface as CaptureRejected");
+        let detail = unavailable.expect("empty reply should surface as CaptureUnavailable");
         assert!(
-            detail.contains("busy") || detail.contains("PhotoCap"),
+            detail.contains("17-byte") || detail.contains("restart"),
             "{detail}"
         );
 
@@ -1322,10 +1345,13 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
 
-        assert!(!reconnected, "busy PhotoCap must not drop the connection");
+        assert!(
+            !reconnected,
+            "empty PhotoCap reply must not drop the connection"
+        );
         assert!(
             seq_after > seq_before,
-            "frame loop must continue after a busy reply"
+            "frame loop must continue after an empty reply"
         );
 
         worker.stop();
