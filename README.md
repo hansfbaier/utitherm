@@ -41,10 +41,10 @@
 <p align="center"><sub><strong>Live view on a real UTi260B+</strong> — thermal image with burned-in OSD, key temperatures, 192×256 measurement plane, USB import panel and device state. Captured at ~18 fps on firmware 1.1.9.</sub></p>
 
 <p align="center">
-  <img alt="utitherm CLI automation guide" src="docs/screenshot-cli.png" width="100%">
+  <a href="https://hansfbaier.github.io/utitherm/docs/cli.html"><img alt="utitherm CLI automation guide" src="docs/screenshot-cli.png" width="100%"></a>
 </p>
 
-<p align="center"><sub><strong>CLI guide</strong> — self-contained HTML reference for commands, JSON schemas, capture formats and the plane mapping. Open <a href="docs/cli.html"><code>docs/cli.html</code></a>.</sub></p>
+<p align="center"><sub><strong>CLI guide</strong> — self-contained HTML reference for commands, JSON schemas, capture formats and the plane mapping. Open the <a href="https://hansfbaier.github.io/utitherm/docs/cli.html">rendered guide</a>.</sub></p>
 
 ## Supported models
 
@@ -130,7 +130,7 @@ utitherm-cli shutter
 utitherm-cli --json watch --frames 100 --sample 121,161
 ```
 
-Full command reference, JSON schemas and file formats: [`docs/cli.html`](docs/cli.html).
+Full command reference, JSON schemas and file formats: [rendered CLI guide](https://hansfbaier.github.io/utitherm/docs/cli.html).
 
 ## Measurement and capture
 
@@ -233,7 +233,7 @@ The suite covers framing rejection, init offsets, unit/colour-scale decoding, FF
 
 | Document | Contents |
 |---|---|
-| [`docs/cli.html`](docs/cli.html) | CLI reference, JSON, capture/USB formats, recipes |
+| [Rendered CLI guide](https://hansfbaier.github.io/utitherm/docs/cli.html) | CLI reference, JSON, capture/USB formats, recipes |
 | [`UTi260B-plus-protocol-spec.md`](UTi260B-plus-protocol-spec.md) | Reference-model protocol |
 | [`UTi-family-protocol-spec.md`](UTi-family-protocol-spec.md) | Tier 1/2 family protocol and geometry |
 | [`DEVICE-PROFILE.md`](DEVICE-PROFILE.md) | Reference unit platform/access notes |
