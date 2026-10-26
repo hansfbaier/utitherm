@@ -149,7 +149,7 @@ impl Worker {
             let stop = Arc::clone(&stop);
             let socket_slot = Arc::clone(&socket_slot);
             thread::Builder::new()
-                .name("uti260b-net".into())
+                .name("utitherm-net".into())
                 .spawn(move || Runtime::new(rx, event_tx, latest, stop, socket_slot).run())?
         };
 
@@ -743,15 +743,22 @@ impl Runtime {
             self.saw_live_plane = true;
             self.log(
                 Level::Info,
-                "device sent an extended vFrame: live 192x256 f32 temperature plane present"
-                    .to_owned(),
+                format!(
+                    "device sent an extended vFrame: {}x{} f32 temperature plane present",
+                    parsed.raw_w, parsed.raw_h
+                ),
             );
         }
 
         self.seq = self.seq.wrapping_add(1);
         self.last_frame_at = Instant::now();
-        let frame = Arc::new(LiveFrame::decode(
+        let frame = Arc::new(LiveFrame::decode_with(
             parsed.yuv,
+            parsed.format,
+            parsed.display_w,
+            parsed.display_h,
+            parsed.raw_w,
+            parsed.raw_h,
             parsed.key_c,
             parsed.plane,
             self.seq,

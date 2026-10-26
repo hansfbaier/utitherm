@@ -27,9 +27,9 @@ const CAPTURE_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "uti260b-cli",
+    name = "utitherm-cli",
     version,
-    about = "Automation CLI for the UNI-T UTi260B+ thermal imager (TCP 9527)",
+    about = "Automation CLI for UNI-T UTi_cmdsys thermal imagers (TCP 9527)",
     long_about = "Non-GUI camera client for scripts. Commands are sent from the verified \
                   whitelist only; the device daemon exits on malformed arguments."
 )]
@@ -40,7 +40,7 @@ pub struct Cli {
     /// Live-view TCP port
     #[arg(long, global = true)]
     port: Option<u16>,
-    /// Config file (default ./uti260b.toml, then ~/.config/uti260b/config.toml)
+    /// Config file (default ./utitherm.toml, then ~/.config/utitherm/config.toml)
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     /// TCP connect timeout in milliseconds
@@ -538,7 +538,9 @@ fn cmd_frame(cli: &Cli, args: &FrameArgs) -> Result<i32, String> {
     }
     let frame = frame.ok_or_else(|| "no frame received".to_owned())?;
 
-    let png = save_optional(args.png.as_deref(), |path| write_png(path, &frame.rgba))?;
+    let png = save_optional(args.png.as_deref(), |path| {
+        write_png(path, &frame.rgba, frame.display_w, frame.display_h)
+    })?;
     let yuv = save_optional(args.yuv.as_deref(), |path| {
         fs::write(path, &frame.yuv).map_err(|err| format!("cannot write {}: {err}", path.display()))
     })?;
@@ -570,13 +572,17 @@ fn cmd_frames(cli: &Cli, args: &FramesArgs) -> Result<i32, String> {
         let stem = format!("frame_{:06}", frame.seq);
         let png = if save_png {
             let path = args.dir.join(format!("{stem}.png"));
-            write_png(&path, &frame.rgba)?;
+            write_png(&path, &frame.rgba, frame.display_w, frame.display_h)?;
             Some(path)
         } else {
             None
         };
         let yuv = if save_yuv {
-            let path = args.dir.join(format!("{stem}.yuv"));
+            let extension = match frame.format {
+                crate::model::PixelFormat::I420 => "yuv",
+                crate::model::PixelFormat::Rgb888 => "rgb",
+            };
+            let path = args.dir.join(format!("{stem}.{extension}"));
             fs::write(&path, &frame.yuv)
                 .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
             Some(path)
@@ -634,7 +640,7 @@ fn cmd_capture(cli: &Cli, args: &CaptureArgs) -> Result<i32, String> {
     capture
         .write_y16_plane(&y16)
         .map_err(|err| format!("cannot write {}: {err}", y16.display()))?;
-    fs::write(&tail, capture.tail)
+    fs::write(&tail, &capture.tail)
         .map_err(|err| format!("cannot write {}: {err}", tail.display()))?;
     if let Some(path) = &raw {
         if let Some(parent) = path.parent()
@@ -651,7 +657,7 @@ fn cmd_capture(cli: &Cli, args: &CaptureArgs) -> Result<i32, String> {
     let value = json!({
         "sections": {
             "shot_jpeg": {"bytes": capture.shot_jpeg.len(), "path": shot},
-            "temperature_c": {"bytes": capture.temperature_c.len() * 4, "samples": capture.temperature_c.len(), "width": capture::TEMP_PLANE_W, "height": capture::TEMP_PLANE_H, "path": temp},
+            "temperature_c": {"bytes": capture.temperature_c.len() * 4, "samples": capture.temperature_c.len(), "width": capture.raw_w, "height": capture.raw_h, "path": temp},
             "vis_jpeg": {"bytes": capture.vis_jpeg.len(), "path": vis},
             "y16": {"bytes": capture.y16.len(), "path": y16},
             "tail": {"bytes": capture.tail.len(), "path": tail},
@@ -663,7 +669,15 @@ fn cmd_capture(cli: &Cli, args: &CaptureArgs) -> Result<i32, String> {
             "mean_c": stats.mean,
             "std_dev_c": stats.std_dev,
         },
-        "mapping": "display/1.25, no rotation or flip",
+        "geometry": {
+            "display": [capture.display_w, capture.display_h],
+            "raw": [capture.raw_w, capture.raw_h],
+        },
+        "mapping": format!(
+            "display x {:.4}/{:.4}, no rotation or flip",
+            capture.raw_w as f32 / capture.display_w as f32,
+            capture.raw_h as f32 / capture.display_h as f32
+        ),
     });
     emit(cli.json, value.clone(), || print_capture(&value));
     Ok(0)
@@ -681,24 +695,46 @@ fn cmd_measure(cli: &Cli, args: &MeasureArgs) -> Result<i32, String> {
         .map(|value| parse_pair(value, "plane"))
         .transpose()?;
 
-    let (source, plane) = if let Some(path) = &args.temp_file {
-        (format!("file:{}", path.display()), read_plane_file(path)?)
+    let (source, plane, raw_w, raw_h, display_w, display_h) = if let Some(path) = &args.temp_file {
+        let plane = read_plane_file(path)?;
+        (
+            format!("file:{}", path.display()),
+            plane,
+            capture::TEMP_PLANE_W,
+            capture::TEMP_PLANE_H,
+            protocol::FRAME_W,
+            protocol::FRAME_H,
+        )
     } else if let Some(path) = &args.capture_file {
         let capture = capture::load_capture_file(path)?;
-        (format!("capture:{}", path.display()), capture.temperature_c)
+        (
+            format!("capture:{}", path.display()),
+            capture.temperature_c,
+            capture.raw_w,
+            capture.raw_h,
+            capture.display_w,
+            capture.display_h,
+        )
     } else if let Some(path) = &args.usb_file {
         let image = usb::parse_usb_file(path)?;
-        (format!("usb:{}", path.display()), image.temperature_c)
+        (
+            format!("usb:{}", path.display()),
+            image.temperature_c,
+            capture::TEMP_PLANE_W,
+            capture::TEMP_PLANE_H,
+            protocol::FRAME_W,
+            protocol::FRAME_H,
+        )
     } else {
         let mut camera = Camera::open(cli)?;
         let deadline = Instant::now() + camera.timeout;
-        let mut plane = None;
-        while plane.is_none() {
+        let mut found = None;
+        while found.is_none() {
             let frame = camera.next_frame()?;
             if let Some(live) = frame.plane_c.clone() {
-                plane = Some(live);
+                found = Some((frame, live));
             }
-            if Instant::now() >= deadline && plane.is_none() {
+            if Instant::now() >= deadline && found.is_none() {
                 return Err(format!(
                     "no extended frame with a live plane within {} ms{}",
                     camera.timeout.as_millis(),
@@ -706,43 +742,55 @@ fn cmd_measure(cli: &Cli, args: &MeasureArgs) -> Result<i32, String> {
                 ));
             }
         }
-        ("live".to_owned(), plane.expect("just checked"))
+        let (frame, plane) = found.expect("just checked");
+        (
+            "live".to_owned(),
+            plane,
+            frame.raw_w,
+            frame.raw_h,
+            frame.display_w,
+            frame.display_h,
+        )
     };
 
     let (display_x, display_y, plane_x, plane_y) = match (pair, plane_pair) {
         (Some((x, y)), None) => {
-            let (px, py) = capture::plane_coords(x, y)
-                .ok_or_else(|| format!("display coordinate ({x}, {y}) is outside 240x320"))?;
+            let (px, py) = capture::plane_coords_for(x, y, display_w, display_h, raw_w, raw_h)
+                .ok_or_else(|| {
+                    format!("display coordinate ({x}, {y}) is outside {display_w}x{display_h}")
+                })?;
             (Some(x), Some(y), px, py)
         }
         (None, Some((px, py))) => {
             let px = px.floor() as isize;
             let py = py.floor() as isize;
-            if !(0..capture::TEMP_PLANE_W as isize).contains(&px)
-                || !(0..capture::TEMP_PLANE_H as isize).contains(&py)
-            {
+            if !(0..raw_w as isize).contains(&px) || !(0..raw_h as isize).contains(&py) {
                 return Err(format!(
-                    "plane coordinate ({px}, {py}) is outside {}x{}",
-                    capture::TEMP_PLANE_W,
-                    capture::TEMP_PLANE_H
+                    "plane coordinate ({px}, {py}) is outside {raw_w}x{raw_h}"
                 ));
             }
             (None, None, px as usize, py as usize)
         }
-        (None, None) => (None, None, 96, 128),
+        (None, None) => (None, None, raw_w / 2, raw_h / 2),
         (Some(_), Some(_)) => return Err("use either --display or --plane".to_owned()),
     };
 
     let temperature_c = plane
-        .get(plane_y * capture::TEMP_PLANE_W + plane_x)
+        .get(plane_y * raw_w + plane_x)
         .copied()
         .ok_or_else(|| "plane sample out of range".to_owned())?;
     let value = json!({
         "temperature_c": temperature_c,
         "source": source,
         "display": display_x.zip(display_y).map(|(x, y)| json!([x, y])),
+        "display_size": [display_w, display_h],
+        "raw_size": [raw_w, raw_h],
         "plane": [plane_x, plane_y],
-        "mapping": "display/1.25, no rotation or flip",
+        "mapping": format!(
+            "display x {:.4}/{:.4}, no rotation or flip",
+            raw_w as f32 / display_w as f32,
+            raw_h as f32 / display_h as f32
+        ),
     });
     emit(cli.json, value.clone(), || print_measure(&value));
     Ok(0)
@@ -851,7 +899,7 @@ fn cmd_watch(cli: &Cli, args: &WatchArgs) -> Result<i32, String> {
     let deadline = args
         .duration_ms
         .map(|ms| Instant::now() + Duration::from_millis(ms));
-    let mut last_plane: Option<Vec<f32>> = None;
+    let mut last_plane: Option<(Vec<f32>, usize, usize, usize, usize)> = None;
     let mut emitted = 0u64;
 
     loop {
@@ -863,14 +911,24 @@ fn cmd_watch(cli: &Cli, args: &WatchArgs) -> Result<i32, String> {
         }
         let frame = camera.next_frame()?;
         if let Some(plane) = &frame.plane_c {
-            last_plane = Some(plane.clone());
+            last_plane = Some((
+                plane.clone(),
+                frame.raw_w,
+                frame.raw_h,
+                frame.display_w,
+                frame.display_h,
+            ));
         }
         let sample = sample_coords.and_then(|(x, y)| {
             last_plane
-                .as_deref()
-                .and_then(|plane| capture::sample_plane(plane, x, y))
+                .as_ref()
+                .and_then(|(plane, raw_w, raw_h, display_w, display_h)| {
+                    capture::sample_plane_for(plane, x, y, *display_w, *display_h, *raw_w, *raw_h)
+                })
         });
-        let plane_stats = last_plane.as_deref().and_then(capture::plane_stats);
+        let plane_stats = last_plane
+            .as_ref()
+            .and_then(|(plane, _, _, _, _)| capture::plane_stats(plane));
 
         if cli.json {
             let value = json!({
@@ -1187,6 +1245,11 @@ fn frame_json(
     json!({
         "seq": frame.seq,
         "rtt_ms": frame.rtt.as_secs_f32() * 1000.0,
+        "geometry": {
+            "display": [frame.display_w, frame.display_h],
+            "raw": [frame.raw_w, frame.raw_h],
+            "format": frame.format.to_string(),
+        },
         "key_c": frame.key_c,
         "plane": {
             "present": frame.plane_c.is_some(),
@@ -1240,14 +1303,10 @@ fn save_plane(path: &Path, plane: &[f32]) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
-fn write_png(path: &Path, rgba: &[u8]) -> Result<(), String> {
+fn write_png(path: &Path, rgba: &[u8], width: usize, height: usize) -> Result<(), String> {
     let file =
         fs::File::create(path).map_err(|err| format!("cannot create {}: {err}", path.display()))?;
-    let mut encoder = png::Encoder::new(
-        BufWriter::new(file),
-        protocol::FRAME_W as u32,
-        protocol::FRAME_H as u32,
-    );
+    let mut encoder = png::Encoder::new(BufWriter::new(file), width as u32, height as u32);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder

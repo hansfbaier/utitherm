@@ -1,9 +1,9 @@
-//! `uti260b-cli` — automation interface for the UTi260B+ camera.
+//! `utitherm-cli` — automation interface for the UTi260B+ camera.
 
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    match uti260b_viewer::cli::run() {
+    match utitherm::cli::run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("error: {message}");

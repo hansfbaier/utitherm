@@ -62,7 +62,7 @@ impl UsbWorker {
         let (event_tx, event_rx) = unbounded();
         let cache_for_thread = cache.clone();
         let join = thread::Builder::new()
-            .name("uti260b-usb".into())
+            .name("utitherm-usb".into())
             .spawn(move || run(rx, event_tx, cache_for_thread, explicit, marker))?;
         Ok(Self {
             tx,
@@ -311,7 +311,7 @@ mod tests {
     #[test]
     fn imports_a_new_file_and_emits_it() {
         let root = std::env::temp_dir().join(format!(
-            "uti260b-usb-worker-{}-{:?}",
+            "utitherm-usb-worker-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

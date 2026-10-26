@@ -130,6 +130,7 @@ pub struct CameraApp {
     capture_stats: Option<TempStats>,
     live_plane: Option<Arc<Vec<f32>>>,
     live_plane_stats: Option<TempStats>,
+    live_plane_dims: Option<(usize, usize, usize, usize)>,
 
     usb_worker: Option<UsbWorker>,
     usb_entries: Vec<ImportedUsb>,
@@ -214,6 +215,7 @@ impl CameraApp {
             capture_stats: None,
             live_plane: None,
             live_plane_stats: None,
+            live_plane_dims: None,
             usb_worker,
             usb_entries: Vec::new(),
             usb_textures: HashMap::new(),
@@ -415,6 +417,7 @@ impl CameraApp {
                     self.ffc_guard_frames = 2;
                     self.live_plane = None;
                     self.live_plane_stats = None;
+                    self.live_plane_dims = None;
                     self.sample = None;
                     let msg = format!(
                         "flat-field correction boundary detected; measurement baseline reset (epoch {})",
@@ -429,6 +432,8 @@ impl CameraApp {
                 }
                 if !guarded && let Some(plane) = &frame.plane_c {
                     self.live_plane_stats = capture::plane_stats(plane);
+                    self.live_plane_dims =
+                        Some((frame.raw_w, frame.raw_h, frame.display_w, frame.display_h));
                     self.live_plane = Some(Arc::new(plane.clone()));
                 }
                 self.last_frame = Some(frame.clone());
@@ -492,10 +497,13 @@ impl CameraApp {
         } else {
             egui::TextureOptions::LINEAR
         };
-        let image = egui::ColorImage::from_rgba_unmultiplied([FRAME_W, FRAME_H], &frame.rgba);
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [frame.display_w, frame.display_h],
+            &frame.rgba,
+        );
         match self.texture.as_mut() {
             Some(texture) => texture.set(image, options),
-            None => self.texture = Some(ctx.load_texture("uti260b-live", image, options)),
+            None => self.texture = Some(ctx.load_texture("utitherm-live", image, options)),
         }
         self.texture_nearest = nearest;
     }
@@ -680,7 +688,7 @@ impl CameraApp {
             self.toast(msg, true);
             return;
         }
-        let stem = format!("uti260b_{:06}", self.last_seq);
+        let stem = format!("utitherm_{:06}", self.last_seq);
         let path = match kind {
             CaptureExport::Temperature => dir.join(format!("{stem}_temp.f32.bin")),
             CaptureExport::Y16 => dir.join(format!("{stem}_y16.u16.bin")),
@@ -802,7 +810,7 @@ impl CameraApp {
             ui.separator();
             let have_frame = self.last_frame.is_some();
             if ui
-                .add_enabled(have_frame, egui::Button::new("Export PNG + YUV"))
+                .add_enabled(have_frame, egui::Button::new("Export PNG + raw"))
                 .clicked()
             {
                 self.export();
@@ -934,10 +942,15 @@ impl CameraApp {
                 return;
             }
             if let Some(stats) = self.live_plane_stats {
+                let (raw_w, raw_h, display_w, display_h) = self
+                    .last_frame
+                    .as_ref()
+                    .map(|frame| (frame.raw_w, frame.raw_h, frame.display_w, frame.display_h))
+                    .unwrap_or((192, 256, FRAME_W, FRAME_H));
                 row(
                     ui,
                     "source",
-                    "live vFrame plane (192×256, every 11th frame)",
+                    &format!("live vFrame plane ({raw_w}×{raw_h})"),
                 );
                 row(
                     ui,
@@ -949,7 +962,15 @@ impl CameraApp {
                     "mean / σ",
                     &format!("{:.2} / {:.2} °C", stats.mean, stats.std_dev),
                 );
-                row(ui, "mapping", "display / 1.25, no flip");
+                row(
+                    ui,
+                    "mapping",
+                    &format!(
+                        "display × {:.4} / {:.4}, no flip",
+                        raw_w as f32 / display_w as f32,
+                        raw_h as f32 / display_h as f32
+                    ),
+                );
                 match self.sample {
                     Some(sample) => {
                         row(ui, "sample", &format!("{:.2} °C", sample.temperature_c));
@@ -985,7 +1006,14 @@ impl CameraApp {
             return;
         };
 
-        row(ui, "plane", "192 × 256 f32 LE °C (stride 192)");
+        row(
+            ui,
+            "plane",
+            &format!(
+                "{} × {} f32 LE °C (stride {})",
+                capture.raw_w, capture.raw_h, capture.raw_w
+            ),
+        );
         row(
             ui,
             "range",
@@ -996,7 +1024,15 @@ impl CameraApp {
             "mean / σ",
             &format!("{:.2} / {:.2} °C", stats.mean, stats.std_dev),
         );
-        row(ui, "mapping", "display / 1.25, no flip");
+        row(
+            ui,
+            "mapping",
+            &format!(
+                "display × {:.4} / {:.4}, no flip",
+                capture.raw_w as f32 / capture.display_w as f32,
+                capture.raw_h as f32 / capture.display_h as f32
+            ),
+        );
         row(ui, "shot JPEG", &format!("{} B", capture.shot_jpeg.len()));
         row(ui, "vis JPEG", &format!("{} B", capture.vis_jpeg.len()));
         row(ui, "y16 plane", &format!("{} B", capture.y16.len()));
@@ -1042,8 +1078,8 @@ impl CameraApp {
             }
         });
         ui.small(
-            "Section 0 is the OSD JPEG, section 2 the clean 480×640 JPEG. The u16 plane \
-             is not linear in temperature; it is kept for diagnostics only (spec §6.1).",
+            "Section 0 is the OSD JPEG, section 2 the clean JPEG. The u16 plane is not \
+             linear in temperature; it is kept for diagnostics only (spec §6.1).",
         );
     }
 
@@ -1554,14 +1590,17 @@ impl CameraApp {
         ui.separator();
         ui.collapsing("About", |ui| {
             ui.small(
-                "Independent UTi260B+ client. Live view frames are palette-mapped \
-                 240×320 YUV with three unlabelled header temperatures. Per-pixel \
-                 measurement uses PhotoCap, the live plane, or a read-only USB import; all \
-                 planes are 192×256 and map to the display at exactly 1.25.",
+                "Independent UTi_cmdsys client. Live frames are palette-mapped I420 or RGB888 \
+                 with three unlabelled header temperatures. Geometry and pixel format are \
+                 selected by payload length; PhotoCap refines the raw/display geometry.",
             );
+            let pixel_bytes = self
+                .last_frame
+                .as_ref()
+                .map(|frame| frame.yuv.len())
+                .unwrap_or(protocol::YUV_LEN);
             ui.small(format!(
-                "Frame payload: {} B pixels + 12 B temperatures; TCP {}.",
-                protocol::YUV_LEN,
+                "Frame payload: {pixel_bytes} B pixels + 12 B temperatures; TCP {}.",
                 self.config.live_port
             ));
             if let Some(source) = &self.config.source {
@@ -1612,15 +1651,24 @@ impl CameraApp {
             .as_ref()
             .and_then(|sha| self.usb_textures.get(sha))
             .cloned();
-        let Some(texture) = usb_texture.or_else(|| self.texture.clone()) else {
+        let Some(texture) = usb_texture.clone().or_else(|| self.texture.clone()) else {
             ui.centered_and_justified(|ui| {
                 ui.weak("No frame yet");
             });
             return;
         };
 
+        let (view_w, view_h) = if usb_texture.is_some() {
+            (240, 320)
+        } else if let Some(frame) = &self.last_frame {
+            (frame.display_w, frame.display_h)
+        } else if let Some(capture) = &self.capture {
+            (capture.display_w, capture.display_h)
+        } else {
+            (FRAME_W, FRAME_H)
+        };
         let available = ui.available_size();
-        let base = egui::vec2(FRAME_W as f32, FRAME_H as f32);
+        let base = egui::vec2(view_w as f32, view_h as f32);
         // Integer scaling is computed in physical pixels, then converted back to
         // points, so the OSD is crisp even on a fractional-DPI display.
         let ppp = ui.ctx().pixels_per_point().max(0.1);
@@ -1659,16 +1707,16 @@ impl CameraApp {
                     {
                         let relative = (pos - rect.min) / rect.size();
                         clicked_display = Some([
-                            relative.x.clamp(0.0, 1.0) * FRAME_W as f32,
-                            relative.y.clamp(0.0, 1.0) * FRAME_H as f32,
+                            relative.x.clamp(0.0, 1.0) * view_w as f32,
+                            relative.y.clamp(0.0, 1.0) * view_h as f32,
                         ]);
                     }
 
                     if let Some(sample) = sample {
                         let point = rect.min
                             + egui::vec2(
-                                sample.display[0] / FRAME_W as f32 * rect.width(),
-                                sample.display[1] / FRAME_H as f32 * rect.height(),
+                                sample.display[0] / view_w as f32 * rect.width(),
+                                sample.display[1] / view_h as f32 * rect.height(),
                             );
                         let color = egui::Color32::from_rgb(255, 220, 80);
                         let painter = ui.painter();
@@ -1692,19 +1740,42 @@ impl CameraApp {
                 });
             });
 
-        if let Some(display) = clicked_display
-            && let Some((px, py)) = capture::plane_coords(display[0], display[1])
-        {
-            let temperature_c = if let Some(capture) = self.capture.as_ref() {
-                capture.temperature_at_display(display[0], display[1])
+        if let Some(display) = clicked_display {
+            let source = if let Some(capture) = self.capture.as_ref() {
+                capture::plane_coords_for(
+                    display[0],
+                    display[1],
+                    capture.display_w,
+                    capture.display_h,
+                    capture.raw_w,
+                    capture.raw_h,
+                )
+                .and_then(|(px, py)| {
+                    capture
+                        .temperature_at_display(display[0], display[1])
+                        .map(|temperature_c| (temperature_c, px, py))
+                })
             } else if let Some(plane) = self.usb_plane.as_deref() {
-                capture::sample_plane(plane, display[0], display[1])
+                capture::plane_coords(display[0], display[1]).and_then(|(px, py)| {
+                    capture::sample_plane(plane, display[0], display[1])
+                        .map(|temperature_c| (temperature_c, px, py))
+                })
+            } else if let (Some(plane), Some((raw_w, raw_h, display_w, display_h))) =
+                (self.live_plane.as_deref(), self.live_plane_dims)
+            {
+                capture::plane_coords_for(
+                    display[0], display[1], display_w, display_h, raw_w, raw_h,
+                )
+                .and_then(|(px, py)| {
+                    capture::sample_plane_for(
+                        plane, display[0], display[1], display_w, display_h, raw_w, raw_h,
+                    )
+                    .map(|temperature_c| (temperature_c, px, py))
+                })
             } else {
-                self.live_plane
-                    .as_deref()
-                    .and_then(|plane| capture::sample_plane(plane, display[0], display[1]))
+                None
             };
-            if let Some(temperature_c) = temperature_c {
+            if let Some((temperature_c, px, py)) = source {
                 self.sample = Some(Sample {
                     display,
                     plane: [px, py],
@@ -1726,8 +1797,8 @@ impl CameraApp {
                     "frame {} · {:.0} ms round trip · {}×{} at {scale_px:.2}×{source}",
                     frame.seq,
                     frame.rtt.as_secs_f32() * 1000.0,
-                    FRAME_W,
-                    FRAME_H
+                    frame.display_w,
+                    frame.display_h
                 ));
             });
         }
@@ -1786,14 +1857,22 @@ fn write_exports(
 ) -> Result<(PathBuf, PathBuf), String> {
     fs::create_dir_all(out_dir).map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
 
-    let stem = format!("uti260b_{:06}", frame.seq);
+    let stem = format!("utitherm_{:06}", frame.seq);
     let png_path = out_dir.join(format!("{stem}.png"));
-    let yuv_path = out_dir.join(format!("{stem}.yuv"));
+    let raw_ext = match frame.format {
+        crate::model::PixelFormat::I420 => "yuv",
+        crate::model::PixelFormat::Rgb888 => "rgb",
+    };
+    let yuv_path = out_dir.join(format!("{stem}.{raw_ext}"));
 
     {
         let file = fs::File::create(&png_path)
             .map_err(|e| format!("cannot create {}: {e}", png_path.display()))?;
-        let mut encoder = png::Encoder::new(BufWriter::new(file), FRAME_W as u32, FRAME_H as u32);
+        let mut encoder = png::Encoder::new(
+            BufWriter::new(file),
+            frame.display_w as u32,
+            frame.display_h as u32,
+        );
         encoder.set_color(png::ColorType::Rgba);
         encoder.set_depth(png::BitDepth::Eight);
         let mut writer = encoder
@@ -1816,7 +1895,7 @@ mod tests {
     #[test]
     fn exports_png_and_raw_yuv() {
         let dir = std::env::temp_dir().join(format!(
-            "uti260b-export-test-{}-{:?}",
+            "utitherm-export-test-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

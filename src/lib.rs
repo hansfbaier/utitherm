@@ -8,6 +8,7 @@ pub mod cli;
 pub mod config;
 pub mod fixtures;
 pub mod frame;
+pub mod model;
 pub mod net;
 pub mod palette;
 pub mod protocol;

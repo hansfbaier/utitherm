@@ -1,4 +1,4 @@
-//! `uti260b-viewer` — independent Rust + egui client for the UNI-T UTi260B+
+//! `utitherm-viewer` — independent Rust + egui client for the UTi_cmdsys
 //! live-view protocol (TCP 9527).
 //!
 //! See `UTi260B-plus-protocol-spec.md`. The streamed image is palette-mapped YUV
@@ -10,22 +10,23 @@ use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use uti260b_viewer::config::{CameraAddr, Config};
-use uti260b_viewer::{app, capture, fixtures};
+use utitherm::config::{CameraAddr, Config};
+use utitherm::{app, capture, fixtures};
 
 const USAGE: &str = "\
-uti260b-viewer — UTi260B+ thermal imager live viewer (TCP 9527)
+utitherm-viewer — UTi_cmdsys thermal imager live viewer (TCP 9527)
 
 USAGE:
-    uti260b-viewer [OPTIONS]
+    utitherm-viewer [OPTIONS]
 
 OPTIONS:
     --ip <IPV4>            Camera address override (default: [camera] ip or auto)
     --port <PORT>          Live-view TCP port (default 9527)
     --fps <N>              Target frame rate, 1..=60 (default 20)
-    --config <PATH>        Config file (default: ./uti260b.toml, then
-                           ~/.config/uti260b/config.toml)
-    --out-dir <DIR>        Where PNG/YUV exports go (default ./captures)
+    --config <PATH>        Config file (default: ./utitherm.toml, then
+                           ~/.config/utitherm/config.toml; old uti260b.toml
+                           paths remain as fallbacks)
+    --out-dir <DIR>        Where PNG/raw exports go (default ./captures)
     --replay <PATH>        Replay framed .bin fixtures or raw .yuv files
                            (single file or directory) instead of connecting
     --make-fixtures <DIR>  Write synthetic fixtures (init.bin, vframe.bin,
@@ -167,7 +168,7 @@ fn run() -> Result<(), String> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("UTi260B+ live view")
+            .with_title("UTi thermal live view")
             .with_inner_size([1180.0, 860.0])
             .with_min_inner_size([820.0, 600.0]),
         ..Default::default()
@@ -175,7 +176,7 @@ fn run() -> Result<(), String> {
 
     let config_for_app = config;
     eframe::run_native(
-        "UTi260B+ live view",
+        "UTi thermal live view",
         options,
         Box::new(move |cc| {
             let app = app::CameraApp::new(cc, config_for_app, mode, notes)
@@ -197,7 +198,7 @@ fn parse_args() -> Result<Option<Cli>, String> {
                 return Ok(None);
             }
             "-V" | "--version" => {
-                println!("uti260b-viewer {}", env!("CARGO_PKG_VERSION"));
+                println!("utitherm-viewer {}", env!("CARGO_PKG_VERSION"));
                 return Ok(None);
             }
             "--ip" => {

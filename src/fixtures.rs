@@ -156,11 +156,22 @@ pub fn vframe_message_with(yuv: &[u8], key_c: [f32; 3]) -> Vec<u8> {
 #[cfg(test)]
 pub const SAMPLE_PLANE_MEAN: f32 = 32.0;
 
-fn fake_jpeg(len: usize) -> Vec<u8> {
-    assert!(len >= 4, "JPEG needs at least SOI and EOI");
+fn fake_jpeg(width: u16, height: u16, len: usize) -> Vec<u8> {
+    assert!(len >= 20, "JPEG needs SOI, SOF0 and EOI");
     let mut jpeg = vec![0u8; len];
     jpeg[0] = 0xFF;
     jpeg[1] = 0xD8;
+    // Minimal SOF0 so jpeg-decoder can read the dimensions without a scan.
+    jpeg[2] = 0xFF;
+    jpeg[3] = 0xC0;
+    jpeg[4..6].copy_from_slice(&11u16.to_be_bytes());
+    jpeg[6] = 8;
+    jpeg[7..9].copy_from_slice(&height.to_be_bytes());
+    jpeg[9..11].copy_from_slice(&width.to_be_bytes());
+    jpeg[11] = 1; // components
+    jpeg[12] = 1; // component id
+    jpeg[13] = 0x11; // sampling
+    jpeg[14] = 0; // quant table
     jpeg[len - 2] = 0xFF;
     jpeg[len - 1] = 0xD9;
     jpeg
@@ -210,8 +221,8 @@ pub fn photocap_payload() -> Vec<u8> {
     let plane_bytes = sample_plane_bytes();
 
     // JPEG stubs have the observed sizes; only the marker wrappers are valid.
-    let shot = fake_jpeg(54_057);
-    let vis = fake_jpeg(214_647);
+    let shot = fake_jpeg(240, 320, 54_057);
+    let vis = fake_jpeg(480, 640, 214_647);
     let y16 = vec![0u8; capture::Y16_PLANE_BYTES];
     let tail = [0u8; 8];
     let bodies: [&[u8]; 5] = [&shot, &plane_bytes, &vis, &y16, &tail];
@@ -261,7 +272,7 @@ pub fn write_all(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
              live_clean.yuv   115 200 B raw YUV 4:2:0 pixel block (240x320)\n\
              photocap.bin     563 661 B framed PhotoCap reply (JPEG stubs, synthetic plane)\n\
              \n\
-             Replay with: uti260b-viewer --replay {}",
+             Replay with: utitherm-viewer --replay {}",
             dir.display()
         )?;
         written.push(readme);

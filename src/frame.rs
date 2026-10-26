@@ -2,20 +2,24 @@
 
 use std::time::{Duration, Instant};
 
-use crate::protocol::RGBA_LEN;
+use crate::model::{self, PixelFormat};
 use crate::yuv;
 
 #[derive(Debug)]
 pub struct LiveFrame {
-    /// 240x320 RGBA8, row-major, alpha = 255.
+    /// Display-sized RGBA8, row-major, alpha = 255.
     pub rgba: Vec<u8>,
-    /// Raw 115 200-byte YUV 4:2:0 block, kept for `.yuv` export and fixtures.
+    /// Raw pixel block: I420 or interleaved RGB888, kept for export and fixtures.
     pub yuv: Vec<u8>,
+    pub format: PixelFormat,
+    pub display_w: usize,
+    pub display_h: usize,
+    pub raw_w: usize,
+    pub raw_h: usize,
     /// Three key temperatures from the frame trailer. Ordering is believed
     /// max/min/centre but unverified (§5.2, E4).
     pub key_c: [f32; 3],
-    /// Live 192x256 temperature plane (f32 LE) if this reply was an extended
-    /// frame (device sends one every 11th request).
+    /// Live temperature plane (f32 LE) if this reply carried one.
     pub plane_c: Option<Vec<f32>>,
     pub seq: u64,
     /// Round trip of the request that produced this frame.
@@ -24,6 +28,7 @@ pub struct LiveFrame {
 }
 
 impl LiveFrame {
+    /// Decode the reference-model geometry. Used by tests and raw fixtures.
     pub fn decode(
         yuv_plane: &[u8],
         key_c: [f32; 3],
@@ -31,10 +36,42 @@ impl LiveFrame {
         seq: u64,
         rtt: Duration,
     ) -> Self {
-        let mut rgba = Vec::with_capacity(RGBA_LEN);
-        yuv::yuv420_to_rgba(yuv_plane, &mut rgba);
+        let geometry = model::REFERENCE;
+        Self::decode_with(
+            yuv_plane,
+            geometry.format,
+            geometry.display_w,
+            geometry.display_h,
+            geometry.raw_w,
+            geometry.raw_h,
+            key_c,
+            live_plane,
+            seq,
+            rtt,
+        )
+    }
+
+    /// Decode one frame with the geometry selected by the family table.
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_with(
+        pixels: &[u8],
+        format: PixelFormat,
+        display_w: usize,
+        display_h: usize,
+        raw_w: usize,
+        raw_h: usize,
+        key_c: [f32; 3],
+        live_plane: Option<&[u8]>,
+        seq: u64,
+        rtt: Duration,
+    ) -> Self {
+        let mut rgba = Vec::with_capacity(display_w * display_h * 4);
+        match format {
+            PixelFormat::I420 => yuv::yuv420_to_rgba_dims(pixels, display_w, display_h, &mut rgba),
+            PixelFormat::Rgb888 => yuv::rgb888_to_rgba(pixels, display_w, display_h, &mut rgba),
+        }
         let plane_c = live_plane.and_then(|bytes| {
-            if bytes.len() != crate::protocol::LIVE_PLANE_BYTES {
+            if bytes.len() != raw_w * raw_h * 4 {
                 return None;
             }
             Some(
@@ -48,7 +85,12 @@ impl LiveFrame {
         });
         Self {
             rgba,
-            yuv: yuv_plane.to_vec(),
+            yuv: pixels.to_vec(),
+            format,
+            display_w,
+            display_h,
+            raw_w,
+            raw_h,
             key_c,
             plane_c,
             seq,
@@ -61,6 +103,14 @@ impl LiveFrame {
     /// data (raw `.yuv` replay fixtures).
     pub fn key(&self, index: usize) -> Option<f32> {
         self.key_c.get(index).copied().filter(|v| v.is_finite())
+    }
+
+    pub fn display_len(&self) -> usize {
+        self.display_w * self.display_h
+    }
+
+    pub fn raw_samples(&self) -> usize {
+        self.raw_w * self.raw_h
     }
 }
 
@@ -87,7 +137,7 @@ impl FfcDetector {
             self.previous = None;
             return false;
         }
-        let luma = mean_luma(&frame.yuv);
+        let luma = mean_luma(frame);
         let previous = self.previous.replace((keys, luma));
         let Some((previous_keys, previous_luma)) = previous else {
             return false;
@@ -104,31 +154,74 @@ impl FfcDetector {
     }
 }
 
-fn mean_luma(yuv: &[u8]) -> f32 {
-    let luma = &yuv[..crate::protocol::YUV_Y_LEN.min(yuv.len())];
-    if luma.is_empty() {
-        return 0.0;
+fn mean_luma(frame: &LiveFrame) -> f32 {
+    let display_pixels = frame.display_w * frame.display_h;
+    match frame.format {
+        PixelFormat::I420 => {
+            let luma = &frame.yuv[..display_pixels.min(frame.yuv.len())];
+            if luma.is_empty() {
+                return 0.0;
+            }
+            luma.iter().map(|&value| f32::from(value)).sum::<f32>() / luma.len() as f32
+        }
+        PixelFormat::Rgb888 => {
+            let pixels = frame.yuv.as_chunks::<3>().0;
+            if pixels.is_empty() {
+                return 0.0;
+            }
+            pixels
+                .iter()
+                .map(|p| {
+                    0.299 * f32::from(p[0]) + 0.587 * f32::from(p[1]) + 0.114 * f32::from(p[2])
+                })
+                .sum::<f32>()
+                / pixels.len() as f32
+        }
     }
-    luma.iter().map(|&value| f32::from(value)).sum::<f32>() / luma.len() as f32
 }
 
 #[cfg(test)]
-mod ffc_tests {
+mod tests {
     use super::*;
-    use std::time::Duration;
+    use crate::protocol::{RGBA_LEN, YUV_LEN};
+
+    #[test]
+    fn reference_frame_has_display_rgba() {
+        let yuv = crate::fixtures::yuv_frame();
+        let frame = LiveFrame::decode(&yuv, [30.0, 31.0, 32.0], None, 1, Duration::ZERO);
+        assert_eq!(frame.rgba.len(), RGBA_LEN);
+        assert_eq!(frame.yuv.len(), YUV_LEN);
+        assert_eq!(frame.format, PixelFormat::I420);
+        assert_eq!((frame.display_w, frame.display_h), (240, 320));
+        assert_eq!((frame.raw_w, frame.raw_h), (192, 256));
+    }
 
     fn frame(keys: [f32; 3], luma: u8) -> LiveFrame {
         let mut yuv = vec![luma; crate::protocol::YUV_LEN];
         yuv[crate::protocol::YUV_Y_LEN..].fill(128);
-        LiveFrame {
-            rgba: Vec::new(),
-            yuv,
-            key_c: keys,
-            plane_c: None,
-            seq: 1,
-            rtt: Duration::from_millis(1),
-            received: std::time::Instant::now(),
-        }
+        LiveFrame::decode(&yuv, keys, None, 1, Duration::from_millis(1))
+    }
+
+    #[test]
+    fn decodes_rgb888_at_non_reference_geometry() {
+        let width = 640;
+        let height = 480;
+        let mut pixels = vec![0u8; width * height * 3];
+        pixels[0..3].copy_from_slice(&[10, 20, 30]);
+        let frame = LiveFrame::decode_with(
+            &pixels,
+            PixelFormat::Rgb888,
+            width,
+            height,
+            320,
+            240,
+            [30.0, 31.0, 32.0],
+            None,
+            1,
+            Duration::ZERO,
+        );
+        assert_eq!(frame.rgba.len(), width * height * 4);
+        assert_eq!(&frame.rgba[0..4], &[10, 20, 30, 255]);
     }
 
     #[test]

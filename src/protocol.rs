@@ -17,6 +17,8 @@
 use std::fmt;
 use std::io::{self, Read};
 
+use crate::model::{self, PixelFormat, PlaneKind};
+
 // ---------------------------------------------------------------------------
 // Command names (§3). All live commands share the "UTi_cmdsys:" prefix.
 // ---------------------------------------------------------------------------
@@ -733,35 +735,76 @@ impl InitReply {
 /// Borrowed live-frame payload: YUV 4:2:0 pixel block + three key temperatures.
 #[derive(Debug, Clone, Copy)]
 pub struct VFrame<'a> {
+    /// Raw pixel block: I420 planes or interleaved RGB888.
     pub yuv: &'a [u8],
+    pub format: PixelFormat,
+    pub display_w: usize,
+    pub display_h: usize,
+    pub raw_w: usize,
+    pub raw_h: usize,
     /// Big-endian `f32` triple. Not max/min/centre of the measurement plane and
     /// ordering unknown (§5.2, E4); display as unlabelled readings.
     pub key_c: [f32; 3],
-    /// Optional live temperature plane (f32 LE, 192x256) appended on every 11th
-    /// reply by the device. Lays out after the key temperatures.
+    /// Optional f32 LE temperature plane; row stride `raw_w`.
     pub plane: Option<&'a [u8]>,
+    /// Optional u16 LE raw plane; row stride `raw_w`.
+    pub plane_u16: Option<&'a [u8]>,
+    pub plane_kind: PlaneKind,
 }
 
+/// Parse a `vFrame` payload using the family geometry table (§5.2).
 pub fn parse_vframe(payload: &[u8]) -> Result<VFrame<'_>> {
-    let plane_len = payload.len().checked_sub(VFRAME_PAYLOAD_LEN);
-    let plane = match plane_len {
-        Some(0) => None,
-        Some(LIVE_PLANE_BYTES) => Some(&payload[VFRAME_PAYLOAD_LEN..]),
-        _ => {
-            return Err(ProtoError::BadPayloadLen {
-                what: "vFrame (115212 or 311820)",
-                got: payload.len(),
-                want: VFRAME_PAYLOAD_LEN,
-            });
-        }
+    let candidates = model::frame_geometries(payload.len());
+    // Prefer a temperature plane over a raw diagnostics plane when the same
+    // length is somehow ambiguous; otherwise keep the first table match.
+    let Some(candidate) = candidates
+        .iter()
+        .find(|candidate| candidate.plane == PlaneKind::F32)
+        .or_else(|| candidates.first())
+    else {
+        return Err(ProtoError::BadPayloadLen {
+            what: "vFrame (known family geometry)",
+            got: payload.len(),
+            want: VFRAME_PAYLOAD_LEN,
+        });
     };
-    let (yuv, key) = payload[..VFRAME_PAYLOAD_LEN].split_at(YUV_LEN);
+
+    let geometry = candidate.geometry;
+    let pixel_len = geometry.pixel_len();
+    let body_len = pixel_len + 12;
+    let plane_kind = candidate.plane;
+    let tail = &payload[body_len..];
+    let expected_tail = match plane_kind {
+        PlaneKind::None => 0,
+        PlaneKind::U16 => geometry.u16_plane_len(),
+        PlaneKind::F32 => geometry.f32_plane_len(),
+    };
+    if tail.len() != expected_tail {
+        return Err(ProtoError::BadPayloadLen {
+            what: "vFrame tail",
+            got: tail.len(),
+            want: expected_tail,
+        });
+    }
+
+    let (yuv, key) = payload[..body_len].split_at(pixel_len);
     let key_c = [
         f32::from_be_bytes(key[0..4].try_into().expect("bounds checked")),
         f32::from_be_bytes(key[4..8].try_into().expect("bounds checked")),
         f32::from_be_bytes(key[8..12].try_into().expect("bounds checked")),
     ];
-    Ok(VFrame { yuv, key_c, plane })
+    Ok(VFrame {
+        yuv,
+        format: geometry.format,
+        display_w: geometry.display_w,
+        display_h: geometry.display_h,
+        raw_w: geometry.raw_w,
+        raw_h: geometry.raw_h,
+        key_c,
+        plane: (plane_kind == PlaneKind::F32).then_some(tail),
+        plane_u16: (plane_kind == PlaneKind::U16).then_some(tail),
+        plane_kind,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -905,6 +948,37 @@ mod tests {
         assert_eq!(frame.key_c, fixtures::SAMPLE_KEY_C);
         assert_eq!(plane.len() / 4, LIVE_PLANE_SAMPLES);
         assert_eq!(f32::from_le_bytes(plane[0..4].try_into().unwrap()), 31.0);
+    }
+
+    #[test]
+    fn parses_rgb888_family_frame_by_length() {
+        let geometry =
+            crate::model::Geometry::new(640, 480, 320, 240, crate::model::PixelFormat::Rgb888);
+        let key = [30.0f32, 31.0, 32.0];
+        let mut payload = vec![0u8; geometry.pixel_len() + 12];
+        for (index, value) in key.iter().enumerate() {
+            payload[geometry.pixel_len() + index * 4..geometry.pixel_len() + index * 4 + 4]
+                .copy_from_slice(&value.to_be_bytes());
+        }
+        let frame = parse_vframe(&payload).expect("RGB888 frame");
+        assert_eq!(frame.format, crate::model::PixelFormat::Rgb888);
+        assert_eq!((frame.display_w, frame.display_h), (640, 480));
+        assert_eq!((frame.raw_w, frame.raw_h), (320, 240));
+        assert_eq!(frame.key_c, key);
+        assert!(frame.plane.is_none());
+    }
+
+    #[test]
+    fn parses_260v_family_plane_geometry() {
+        let geometry =
+            crate::model::Geometry::new(640, 480, 256, 192, crate::model::PixelFormat::Rgb888);
+        let payload_len = geometry.pixel_len() + 12 + geometry.f32_plane_len();
+        let mut payload = vec![0u8; payload_len];
+        let frame = parse_vframe(&payload).expect("260V geometry");
+        assert_eq!((frame.display_w, frame.display_h), (640, 480));
+        assert_eq!((frame.raw_w, frame.raw_h), (256, 192));
+        payload[0] = 1; // keep the test from looking like a degenerate all-zero buffer
+        assert!(parse_vframe(&payload).is_ok());
     }
 
     #[test]

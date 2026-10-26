@@ -1,10 +1,22 @@
 [package]
-name = "uti260b-viewer"
+name = "utitherm"
 version = "0.1.0"
 edition = "2024"
-description = "Independent Rust GUI + automation CLI for the UNI-T UTi260B+ thermal imager (TCP 9527 protocol)"
+description = "Independent Rust GUI + automation CLI for UNI-T UTi_cmdsys thermal imagers (TCP 9527 protocol)"
 license = "MIT OR Apache-2.0"
-default-run = "uti260b-viewer"
+default-run = "utitherm-viewer"
+
+[lib]
+name = "utitherm"
+path = "src/lib.rs"
+
+[[bin]]
+name = "utitherm-viewer"
+path = "src/main.rs"
+
+[[bin]]
+name = "utitherm-cli"
+path = "src/bin/utitherm-cli.rs"
 
 [dependencies]
 arc-swap = "1.7"

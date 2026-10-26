@@ -1,4 +1,4 @@
-# Copy to ./uti260b.toml or ~/.config/uti260b/config.toml.
+# Copy to ./utitherm.toml or ~/.config/utitherm/config.toml.
 # While joined to the camera's AP, "auto" resolves the default gateway,
 # which is the camera itself. Override with an explicit address if needed.
 [camera]

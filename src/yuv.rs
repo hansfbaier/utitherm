@@ -9,24 +9,33 @@
 //! B = Y + 1.772*(U-128)
 //! ```
 
-use crate::protocol::{FRAME_H, FRAME_W, RGBA_LEN, YUV_CHROMA_LEN, YUV_LEN, YUV_Y_LEN};
+use crate::protocol::{FRAME_H, FRAME_W};
 
-/// Convert one 115 200-byte YUV 4:2:0 frame into `out` as 24-bit RGBA (`a=255`).
-///
-/// `out` is cleared and filled with exactly [`RGBA_LEN`] bytes.
+/// Convert one reference-model 240x320 YUV 4:2:0 frame into RGBA.
 pub fn yuv420_to_rgba(yuv: &[u8], out: &mut Vec<u8>) {
-    assert_eq!(yuv.len(), YUV_LEN, "unexpected YUV frame size");
+    yuv420_to_rgba_dims(yuv, FRAME_W, FRAME_H, out);
+}
+
+/// Convert a planar I420 frame of arbitrary display size into RGBA.
+pub fn yuv420_to_rgba_dims(yuv: &[u8], width: usize, height: usize, out: &mut Vec<u8>) {
+    let luma_len = width * height;
+    let chroma_len = (width / 2) * (height / 2);
+    assert_eq!(
+        yuv.len(),
+        luma_len + 2 * chroma_len,
+        "unexpected I420 frame size for {width}x{height}"
+    );
     out.clear();
-    out.reserve(RGBA_LEN);
+    out.reserve(luma_len * 4);
 
-    let (y_plane, chroma) = yuv.split_at(YUV_Y_LEN);
-    let (u_plane, v_plane) = chroma.split_at(YUV_CHROMA_LEN);
-    let chroma_w = FRAME_W / 2;
+    let (y_plane, chroma) = yuv.split_at(luma_len);
+    let (u_plane, v_plane) = chroma.split_at(chroma_len);
+    let chroma_w = width / 2;
 
-    for y in 0..FRAME_H {
-        let luma_row = y * FRAME_W;
+    for y in 0..height {
+        let luma_row = y * width;
         let chroma_row = (y / 2) * chroma_w;
-        for x in 0..FRAME_W {
+        for x in 0..width {
             let luma = f32::from(y_plane[luma_row + x]);
             let c = chroma_row + x / 2;
             let u = f32::from(u_plane[c]) - 128.0;
@@ -44,15 +53,29 @@ pub fn yuv420_to_rgba(yuv: &[u8], out: &mut Vec<u8>) {
     }
 }
 
+/// Convert interleaved RGB888 pixels into RGBA.
+pub fn rgb888_to_rgba(rgb: &[u8], width: usize, height: usize, out: &mut Vec<u8>) {
+    assert_eq!(
+        rgb.len(),
+        width * height * 3,
+        "unexpected RGB888 frame size for {width}x{height}"
+    );
+    out.clear();
+    out.reserve(width * height * 4);
+    for pixel in rgb.as_chunks::<3>().0 {
+        out.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+    }
+}
+
 #[inline]
 fn clamp_u8(value: f32) -> u8 {
-    // `round` keeps us well inside the ±1 tolerance of the golden fixture (§13.3).
     value.round().clamp(0.0, 255.0) as u8
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{YUV_CHROMA_LEN, YUV_LEN, YUV_Y_LEN};
 
     fn pixel(yuv: &[u8], x: usize, y: usize) -> [u8; 4] {
         let i = (y * FRAME_W + x) * 4;

@@ -30,7 +30,7 @@ pub const DEFAULT_PORT: u16 = 9527;
 pub const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 2000;
 pub const DEFAULT_READ_TIMEOUT_MS: u64 = 2000;
 pub const DEFAULT_TARGET_FPS: u32 = 20;
-pub const DEFAULT_CONFIG_NAME: &str = "uti260b.toml";
+pub const DEFAULT_CONFIG_NAME: &str = "utitherm.toml";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CameraAddr {
@@ -222,10 +222,13 @@ fn strip_comment(line: &str) -> &str {
 
 fn default_config_paths() -> Vec<PathBuf> {
     let mut paths = vec![PathBuf::from(DEFAULT_CONFIG_NAME)];
+    // Keep the old project name as a silent fallback so existing configs work.
+    paths.push(PathBuf::from("uti260b.toml"));
     if let Some(home) = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
     {
+        paths.push(home.join("utitherm").join("config.toml"));
         paths.push(home.join("uti260b").join("config.toml"));
     }
     paths
@@ -333,7 +336,7 @@ mod tests {
     #[test]
     fn parses_documented_config() {
         let dir = std::env::temp_dir().join(format!(
-            "uti260b-config-test-{}-{:?}",
+            "utitherm-config-test-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -364,7 +367,7 @@ mod tests {
     #[test]
     fn rejects_invalid_values_without_failing() {
         let dir = std::env::temp_dir().join(format!(
-            "uti260b-config-bad-{}-{:?}",
+            "utitherm-config-bad-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -385,7 +388,7 @@ mod tests {
 
     #[test]
     fn missing_explicit_config_is_an_error() {
-        let err = Config::load(Some(Path::new("/nonexistent/uti260b.toml"))).unwrap_err();
+        let err = Config::load(Some(Path::new("/nonexistent/utitherm.toml"))).unwrap_err();
         assert!(err.contains("does not exist"), "{err}");
     }
 }

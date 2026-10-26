@@ -712,7 +712,7 @@ pub(crate) mod tests {
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "uti260b-usb-test-{name}-{}-{:?}",
+            "utitherm-usb-test-{name}-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

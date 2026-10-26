@@ -20,6 +20,7 @@ use std::io::Cursor;
 use std::path::Path;
 use std::time::Instant;
 
+use crate::model;
 use crate::protocol::{self, FRAME_H, FRAME_W, ProtoError, Result, TOKEN_PHOTOCAP};
 
 pub const TEMP_PLANE_W: usize = 192;
@@ -34,16 +35,21 @@ pub const DISPLAY_TO_PLANE: f32 = 1.0 / PLANE_TO_DISPLAY;
 
 #[derive(Clone, Debug)]
 pub struct Capture {
-    /// Section 0: JPEG 240x320 with the device OSD.
+    /// Section 0: JPEG with the device OSD, display size.
     pub shot_jpeg: Vec<u8>,
-    /// Section 1: f32 LE °C, row-major 192x256.
+    /// Section 1: f32 LE °C, row-major `raw_w x raw_h`.
     pub temperature_c: Vec<f32>,
-    /// Section 2: JPEG 480x640, no OSD.
+    /// Section 2: JPEG, larger visible image.
     pub vis_jpeg: Vec<u8>,
-    /// Section 3: u16 LE raw sensor plane, 192x256.
+    /// Section 3: u16 LE raw sensor plane, `raw_w x raw_h`.
     pub y16: Vec<u8>,
-    /// Section 4: eight bytes of unknown purpose [U].
-    pub tail: [u8; 8],
+    /// Section 4: optional trailing block (8 bytes on the reference model).
+    pub tail: Vec<u8>,
+    /// Measurement-plane geometry discovered from section 1 and the JPEGs.
+    pub raw_w: usize,
+    pub raw_h: usize,
+    pub display_w: usize,
+    pub display_h: usize,
     pub received: Instant,
 }
 
@@ -57,9 +63,9 @@ pub struct TempStats {
 
 impl Capture {
     pub fn parse(payload: &[u8]) -> Result<Self> {
-        let mut sections: Vec<&[u8]> = Vec::with_capacity(5);
+        let mut sections: Vec<&[u8]> = Vec::new();
         let mut offset = 0usize;
-        for _ in 0..5 {
+        while offset < payload.len() {
             let Some(head) = payload.get(offset..offset + 4) else {
                 return Err(ProtoError::Field {
                     name: "PhotoCap section table",
@@ -80,42 +86,20 @@ impl Capture {
             sections.push(body);
             offset += len;
         }
-        if offset != payload.len() {
+        // Sections 0-3 are universal; section 4 (TM) is optional on some
+        // out-of-scope models and section 5 is a T-family extension.
+        if sections.len() < 4 {
             return Err(ProtoError::Field {
                 name: "PhotoCap payload",
-                why: format!("{} bytes after the fifth section", payload.len() - offset),
+                why: format!("only {} sections, need at least four", sections.len()),
             });
         }
 
-        let (shot_jpeg, temperature_raw, vis_jpeg, y16, tail_raw) = (
-            sections[0],
-            sections[1],
-            sections[2],
-            sections[3],
-            sections[4],
-        );
-
-        if temperature_raw.len() != TEMP_PLANE_BYTES {
-            return Err(ProtoError::BadPayloadLen {
-                what: "PhotoCap temperature plane",
-                got: temperature_raw.len(),
-                want: TEMP_PLANE_BYTES,
-            });
-        }
-        if y16.len() != Y16_PLANE_BYTES {
-            return Err(ProtoError::BadPayloadLen {
-                what: "PhotoCap y16 plane",
-                got: y16.len(),
-                want: Y16_PLANE_BYTES,
-            });
-        }
-        if tail_raw.len() != 8 {
-            return Err(ProtoError::BadPayloadLen {
-                what: "PhotoCap trailing block",
-                got: tail_raw.len(),
-                want: 8,
-            });
-        }
+        let shot_jpeg = sections[0];
+        let temperature_raw = sections[1];
+        let vis_jpeg = sections[2];
+        let y16 = sections[3];
+        let tail_raw = sections.get(4).copied().unwrap_or(&[]);
         if !is_jpeg(shot_jpeg) {
             return Err(ProtoError::Field {
                 name: "PhotoCap section 0",
@@ -129,7 +113,32 @@ impl Capture {
             });
         }
 
-        let mut temperature_c = Vec::with_capacity(TEMP_PLANE_SAMPLES);
+        let (display_w, display_h) = jpeg_dimensions(shot_jpeg)?;
+        let raw_samples = y16.len() / 2;
+        if !y16.len().is_multiple_of(2) || raw_samples == 0 {
+            return Err(ProtoError::BadPayloadLen {
+                what: "PhotoCap y16 plane",
+                got: y16.len(),
+                want: 2,
+            });
+        }
+        if temperature_raw.len() != raw_samples * 4 {
+            return Err(ProtoError::BadPayloadLen {
+                what: "PhotoCap temperature plane",
+                got: temperature_raw.len(),
+                want: raw_samples * 4,
+            });
+        }
+        let Some((raw_w, raw_h)) = model::derive_raw(display_w, display_h, raw_samples) else {
+            return Err(ProtoError::Field {
+                name: "PhotoCap geometry",
+                why: format!(
+                    "cannot resolve {raw_samples} raw samples against {display_w}x{display_h} display"
+                ),
+            });
+        };
+
+        let mut temperature_c = Vec::with_capacity(raw_samples);
         for (index, chunk) in temperature_raw.as_chunks::<4>().0.iter().enumerate() {
             let value = f32::from_le_bytes(*chunk);
             if !value.is_finite() {
@@ -141,15 +150,16 @@ impl Capture {
             temperature_c.push(value);
         }
 
-        let mut tail = [0u8; 8];
-        tail.copy_from_slice(tail_raw);
-
         Ok(Self {
             shot_jpeg: shot_jpeg.to_vec(),
             temperature_c,
             vis_jpeg: vis_jpeg.to_vec(),
             y16: y16.to_vec(),
-            tail,
+            tail: tail_raw.to_vec(),
+            raw_w,
+            raw_h,
+            display_w,
+            display_h,
             received: Instant::now(),
         })
     }
@@ -163,21 +173,28 @@ impl Capture {
         })
     }
 
-    /// Sample the plane at a display pixel coordinate (0..240, 0..320).
+    /// Sample the plane at a display pixel coordinate.
     pub fn temperature_at_display(&self, display_x: f32, display_y: f32) -> Option<f32> {
-        let (px, py) = plane_coords(display_x, display_y)?;
+        let (px, py) = plane_coords_for(
+            display_x,
+            display_y,
+            self.display_w,
+            self.display_h,
+            self.raw_w,
+            self.raw_h,
+        )?;
         self.temperature_at_plane(px, py)
     }
 
     pub fn temperature_at_plane(&self, px: usize, py: usize) -> Option<f32> {
-        if px >= TEMP_PLANE_W || py >= TEMP_PLANE_H {
+        if px >= self.raw_w || py >= self.raw_h {
             return None;
         }
-        self.temperature_c.get(py * TEMP_PLANE_W + px).copied()
+        self.temperature_c.get(py * self.raw_w + px).copied()
     }
 
     pub fn write_temperature_plane(&self, path: &Path) -> std::io::Result<()> {
-        let mut bytes = Vec::with_capacity(TEMP_PLANE_BYTES);
+        let mut bytes = Vec::with_capacity(self.temperature_c.len() * 4);
         for value in &self.temperature_c {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
@@ -194,15 +211,17 @@ impl Capture {
         for value in &self.temperature_c {
             temperature.extend_from_slice(&value.to_le_bytes());
         }
-        let sections: [&[u8]; 5] = [
-            &self.shot_jpeg,
-            &temperature,
-            &self.vis_jpeg,
-            &self.y16,
-            &self.tail,
-        ];
         let mut payload = Vec::new();
-        for section in sections {
+        for section in [
+            self.shot_jpeg.as_slice(),
+            temperature.as_slice(),
+            self.vis_jpeg.as_slice(),
+            self.y16.as_slice(),
+            self.tail.as_slice(),
+        ] {
+            if section.is_empty() {
+                continue;
+            }
             payload.extend_from_slice(&(section.len() as u32).to_be_bytes());
             payload.extend_from_slice(section);
         }
@@ -217,7 +236,7 @@ impl Capture {
 
 /// Statistics for a 192x256 f32 plane (PhotoCap section 1 or a live plane).
 pub fn plane_stats(plane: &[f32]) -> Option<TempStats> {
-    if plane.len() != TEMP_PLANE_SAMPLES {
+    if plane.is_empty() {
         return None;
     }
     let mut min = f32::INFINITY;
@@ -249,13 +268,34 @@ pub fn plane_stats(plane: &[f32]) -> Option<TempStats> {
     })
 }
 
-/// Sample a display coordinate directly from a 192x256 f32 plane.
+/// Sample a display coordinate from the reference-model plane.
 pub fn sample_plane(plane: &[f32], display_x: f32, display_y: f32) -> Option<f32> {
-    if plane.len() != TEMP_PLANE_SAMPLES {
+    sample_plane_for(
+        plane,
+        display_x,
+        display_y,
+        FRAME_W,
+        FRAME_H,
+        TEMP_PLANE_W,
+        TEMP_PLANE_H,
+    )
+}
+
+/// Sample a display coordinate from an arbitrary family plane.
+pub fn sample_plane_for(
+    plane: &[f32],
+    display_x: f32,
+    display_y: f32,
+    display_w: usize,
+    display_h: usize,
+    raw_w: usize,
+    raw_h: usize,
+) -> Option<f32> {
+    if plane.len() != raw_w * raw_h {
         return None;
     }
-    let (px, py) = plane_coords(display_x, display_y)?;
-    plane.get(py * TEMP_PLANE_W + px).copied()
+    let (px, py) = plane_coords_for(display_x, display_y, display_w, display_h, raw_w, raw_h)?;
+    plane.get(py * raw_w + px).copied()
 }
 
 fn is_jpeg(bytes: &[u8]) -> bool {
@@ -267,15 +307,37 @@ fn is_jpeg(bytes: &[u8]) -> bool {
 /// `plane = display / 1.25`, no rotation, no flip. Returns `None` outside the
 /// display.
 pub fn plane_coords(display_x: f32, display_y: f32) -> Option<(usize, usize)> {
-    if !display_x.is_finite() || !display_y.is_finite() {
+    plane_coords_for(
+        display_x,
+        display_y,
+        FRAME_W,
+        FRAME_H,
+        TEMP_PLANE_W,
+        TEMP_PLANE_H,
+    )
+}
+
+/// Map a display coordinate to an arbitrary raw plane using
+/// `plane = display * raw/display` with no rotation or flip.
+pub fn plane_coords_for(
+    display_x: f32,
+    display_y: f32,
+    display_w: usize,
+    display_h: usize,
+    raw_w: usize,
+    raw_h: usize,
+) -> Option<(usize, usize)> {
+    if !display_x.is_finite() || !display_y.is_finite() || raw_w == 0 || raw_h == 0 {
         return None;
     }
-    if !(0.0..FRAME_W as f32).contains(&display_x) || !(0.0..FRAME_H as f32).contains(&display_y) {
+    if !(0.0..display_w as f32).contains(&display_x)
+        || !(0.0..display_h as f32).contains(&display_y)
+    {
         return None;
     }
-    let px = (display_x * DISPLAY_TO_PLANE).floor() as usize;
-    let py = (display_y * DISPLAY_TO_PLANE).floor() as usize;
-    Some((px.min(TEMP_PLANE_W - 1), py.min(TEMP_PLANE_H - 1)))
+    let px = (display_x * raw_w as f32 / display_w as f32).floor() as usize;
+    let py = (display_y * raw_h as f32 / display_h as f32).floor() as usize;
+    Some((px.min(raw_w - 1), py.min(raw_h - 1)))
 }
 
 /// Pearson correlation between a 240x320 luma plane and the temperature plane
@@ -285,17 +347,29 @@ pub fn plane_coords(display_x: f32, display_y: f32) -> Option<(usize, usize)> {
 /// orientation. Rendering the plane 256 wide instead of 192 tiles it into bands
 /// and drops the correlation sharply.
 pub fn luma_correlation(plane: &[f32], luma: &[f32]) -> Option<f32> {
-    if plane.len() != TEMP_PLANE_SAMPLES || luma.len() != FRAME_W * FRAME_H {
+    luma_correlation_for(plane, luma, FRAME_W, FRAME_H, TEMP_PLANE_W, TEMP_PLANE_H)
+}
+
+pub fn luma_correlation_for(
+    plane: &[f32],
+    luma: &[f32],
+    display_w: usize,
+    display_h: usize,
+    raw_w: usize,
+    raw_h: usize,
+) -> Option<f32> {
+    if plane.len() != raw_w * raw_h || luma.len() != display_w * display_h {
         return None;
     }
 
     let mut pairs = Vec::with_capacity(luma.len());
-    for y in 0..FRAME_H {
-        for x in 0..FRAME_W {
-            let (px, py) = plane_coords(x as f32, y as f32)?;
+    for y in 0..display_h {
+        for x in 0..display_w {
+            let (px, py) =
+                plane_coords_for(x as f32, y as f32, display_w, display_h, raw_w, raw_h)?;
             pairs.push((
-                f64::from(plane[py * TEMP_PLANE_W + px]),
-                f64::from(luma[y * FRAME_W + x]),
+                f64::from(plane[py * raw_w + px]),
+                f64::from(luma[y * display_w + x]),
             ));
         }
     }
@@ -363,13 +437,21 @@ pub fn load_capture_file(path: &Path) -> std::result::Result<Capture, String> {
 pub fn verify_capture_file(path: &Path) -> std::result::Result<VerifyReport, String> {
     let capture = load_capture_file(path)?;
     let (luma, width, height) = decode_luma(&capture.shot_jpeg)?;
-    if (width, height) != (FRAME_W, FRAME_H) {
+    if (width, height) != (capture.display_w, capture.display_h) {
         return Err(format!(
-            "OSD JPEG is {width}x{height}, expected {FRAME_W}x{FRAME_H}"
+            "OSD JPEG is {width}x{height}, expected {}x{}",
+            capture.display_w, capture.display_h
         ));
     }
-    let correlation = luma_correlation(&capture.temperature_c, &luma)
-        .ok_or_else(|| "cannot correlate: empty or constant plane".to_owned())?;
+    let correlation = luma_correlation_for(
+        &capture.temperature_c,
+        &luma,
+        capture.display_w,
+        capture.display_h,
+        capture.raw_w,
+        capture.raw_h,
+    )
+    .ok_or_else(|| "cannot correlate: empty or constant plane".to_owned())?;
 
     Ok(VerifyReport {
         shot_jpeg_bytes: capture.shot_jpeg.len(),
@@ -379,6 +461,19 @@ pub fn verify_capture_file(path: &Path) -> std::result::Result<VerifyReport, Str
         stats: capture.stats(),
         correlation,
     })
+}
+
+fn jpeg_dimensions(jpeg: &[u8]) -> Result<(usize, usize)> {
+    let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(jpeg));
+    decoder.read_info().map_err(|err| ProtoError::Field {
+        name: "PhotoCap JPEG header",
+        why: format!("JPEG header decode failed: {err}"),
+    })?;
+    let info = decoder.info().ok_or_else(|| ProtoError::Field {
+        name: "PhotoCap JPEG header",
+        why: "decoder returned no image info".to_owned(),
+    })?;
+    Ok((usize::from(info.width), usize::from(info.height)))
 }
 
 fn decode_luma(jpeg: &[u8]) -> std::result::Result<(Vec<f32>, usize, usize), String> {
@@ -494,7 +589,7 @@ mod tests {
         let capture = Capture::parse(&framed.payload).expect("capture");
         assert_eq!(capture.temperature_c.len(), TEMP_PLANE_SAMPLES);
         assert_eq!(capture.y16.len(), Y16_PLANE_BYTES);
-        assert_eq!(capture.tail, [0u8; 8]);
+        assert_eq!(capture.tail, vec![0u8; 8]);
         assert!(is_jpeg(&capture.shot_jpeg));
         assert!(is_jpeg(&capture.vis_jpeg));
 
@@ -516,6 +611,67 @@ mod tests {
         let reparsed = Capture::parse(&capture.to_payload()).expect("payload roundtrip");
         assert_eq!(reparsed.temperature_c, capture.temperature_c);
         assert_eq!(reparsed.shot_jpeg, capture.shot_jpeg);
+    }
+
+    fn jpeg_stub(width: u16, height: u16, len: usize) -> Vec<u8> {
+        let mut jpeg = vec![0u8; len];
+        jpeg[0] = 0xFF;
+        jpeg[1] = 0xD8;
+        jpeg[2] = 0xFF;
+        jpeg[3] = 0xC0;
+        jpeg[4..6].copy_from_slice(&11u16.to_be_bytes());
+        jpeg[6] = 8;
+        jpeg[7..9].copy_from_slice(&height.to_be_bytes());
+        jpeg[9..11].copy_from_slice(&width.to_be_bytes());
+        jpeg[11] = 1;
+        jpeg[12] = 1;
+        jpeg[13] = 0x11;
+        jpeg[len - 2] = 0xFF;
+        jpeg[len - 1] = 0xD9;
+        jpeg
+    }
+
+    #[test]
+    fn parses_rgb_family_capture_geometry() {
+        let raw_w = 320;
+        let raw_h = 240;
+        let mut payload = Vec::new();
+        for section in [
+            jpeg_stub(640, 480, 1024),
+            vec![0u8; raw_w * raw_h * 4],
+            jpeg_stub(1280, 960, 2048),
+            vec![0u8; raw_w * raw_h * 2],
+            vec![0u8; 8],
+        ] {
+            payload.extend_from_slice(&(section.len() as u32).to_be_bytes());
+            payload.extend_from_slice(&section);
+        }
+        let capture = Capture::parse(&payload).expect("rgb family capture");
+        assert_eq!((capture.display_w, capture.display_h), (640, 480));
+        assert_eq!((capture.raw_w, capture.raw_h), (320, 240));
+        assert_eq!(capture.temperature_c.len(), raw_w * raw_h);
+        assert_eq!(capture.temperature_at_display(639.0, 479.0), Some(0.0));
+    }
+
+    #[test]
+    fn accepts_capture_without_optional_tail_section() {
+        let raw_w = 192;
+        let raw_h = 256;
+        let mut payload = Vec::new();
+        for section in [
+            jpeg_stub(240, 320, 1024),
+            vec![0u8; raw_w * raw_h * 4],
+            jpeg_stub(480, 640, 2048),
+            vec![0u8; raw_w * raw_h * 2],
+        ] {
+            payload.extend_from_slice(&(section.len() as u32).to_be_bytes());
+            payload.extend_from_slice(&section);
+        }
+        let capture = Capture::parse(&payload).expect("four-section capture");
+        assert!(capture.tail.is_empty());
+        assert_eq!((capture.raw_w, capture.raw_h), (192, 256));
+        let reparsed = Capture::parse(&capture.to_payload()).expect("roundtrip");
+        assert!(reparsed.tail.is_empty());
     }
 
     #[test]

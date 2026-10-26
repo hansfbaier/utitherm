@@ -20,6 +20,7 @@ use crossbeam_channel::{Receiver, Sender, unbounded};
 
 use crate::capture::Capture;
 use crate::frame::LiveFrame;
+use crate::model::{self, PixelFormat};
 use crate::net::{ConnState, Event, Level, LogLine, NetStats};
 use crate::protocol::{self, InitReply, TOKEN_INIT, TOKEN_PHOTOCAP, TOKEN_VFRAME, YUV_LEN};
 
@@ -30,6 +31,11 @@ const CONTROL_POLL: Duration = Duration::from_millis(50);
 #[derive(Clone, Debug)]
 struct FrameFixture {
     yuv: Vec<u8>,
+    format: PixelFormat,
+    display_w: usize,
+    display_h: usize,
+    raw_w: usize,
+    raw_h: usize,
     keys: [f32; 3],
     plane: Option<Vec<u8>>,
     source: String,
@@ -75,7 +81,7 @@ impl ReplayWorker {
         let join = {
             let latest = Arc::clone(&latest);
             thread::Builder::new()
-                .name("uti260b-replay".into())
+                .name("utitherm-replay".into())
                 .spawn(move || run(fixtures, rx, event_tx, latest, fps))
                 .map_err(|e| format!("cannot start replay thread: {e}"))?
         };
@@ -190,8 +196,13 @@ fn run(
         index = index.wrapping_add(1);
         seq = seq.wrapping_add(1);
 
-        let frame = Arc::new(LiveFrame::decode(
+        let frame = Arc::new(LiveFrame::decode_with(
             &fixture.yuv,
+            fixture.format,
+            fixture.display_w,
+            fixture.display_h,
+            fixture.raw_w,
+            fixture.raw_h,
             fixture.keys,
             fixture.plane.as_deref(),
             seq,
@@ -206,7 +217,10 @@ fn run(
                 rtt_ms: 0.0,
                 fps: frames_since_stats as f32 / elapsed.max(0.001),
                 frames: seq,
-                last_length: fixture.yuv.len() as u32 + BOXED_OVERHEAD,
+                last_length: (fixture.yuv.len()
+                    + 12
+                    + fixture.plane.as_ref().map_or(0, Vec::len)
+                    + BOXED_OVERHEAD as usize) as u32,
             }));
             frames_since_stats = 0;
             last_stats = Instant::now();
@@ -283,6 +297,11 @@ fn load(path: &Path) -> Result<FixtureSet, String> {
             }
             set.frames.push(FrameFixture {
                 yuv: bytes,
+                format: model::REFERENCE.format,
+                display_w: model::REFERENCE.display_w,
+                display_h: model::REFERENCE.display_h,
+                raw_w: model::REFERENCE.raw_w,
+                raw_h: model::REFERENCE.raw_h,
                 keys: [f32::NAN; 3],
                 plane: None,
                 source: file.display().to_string(),
@@ -316,6 +335,11 @@ fn load(path: &Path) -> Result<FixtureSet, String> {
                         TOKEN_VFRAME => match protocol::parse_vframe(&message.payload) {
                             Ok(frame) => set.frames.push(FrameFixture {
                                 yuv: frame.yuv.to_vec(),
+                                format: frame.format,
+                                display_w: frame.display_w,
+                                display_h: frame.display_h,
+                                raw_w: frame.raw_w,
+                                raw_h: frame.raw_h,
                                 keys: frame.key_c,
                                 plane: frame.plane.map(|plane| plane.to_vec()),
                                 source: file.display().to_string(),
@@ -334,6 +358,11 @@ fn load(path: &Path) -> Result<FixtureSet, String> {
                     if !parsed_any && bytes.len() == YUV_LEN {
                         set.frames.push(FrameFixture {
                             yuv: bytes,
+                            format: model::REFERENCE.format,
+                            display_w: model::REFERENCE.display_w,
+                            display_h: model::REFERENCE.display_h,
+                            raw_w: model::REFERENCE.raw_w,
+                            raw_h: model::REFERENCE.raw_h,
                             keys: [f32::NAN; 3],
                             plane: None,
                             source: file.display().to_string(),
@@ -392,7 +421,7 @@ mod tests {
     #[test]
     fn loads_framed_and_raw_fixtures_from_directory() {
         let dir = std::env::temp_dir().join(format!(
-            "uti260b-replay-test-{}-{:?}",
+            "utitherm-replay-test-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -416,7 +445,7 @@ mod tests {
     #[test]
     fn rejects_wrong_raw_yuv_size() {
         let dir = std::env::temp_dir().join(format!(
-            "uti260b-replay-bad-{}-{:?}",
+            "utitherm-replay-bad-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -439,7 +468,7 @@ mod tests {
     #[test]
     fn worker_publishes_frames_and_the_init_event() {
         let dir = std::env::temp_dir().join(format!(
-            "uti260b-replay-worker-{}-{:?}",
+            "utitherm-replay-worker-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
